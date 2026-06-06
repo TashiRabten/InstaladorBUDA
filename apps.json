@@ -1,0 +1,168 @@
+{
+  "_comment": "App registry for InstaladorBUDA. ADD A NEW APP = add an object to \"apps\" below — no code changes. See README.md for the field reference and the full deployment strategy. Paths in repoRoot/versionFile/uploadScript/models[].items[].path are resolved per app; repoRoot may live anywhere on disk so InstaladorBUDA can drive many separate app repos.",
+  "releaseRepoDefault": "TashiRabten/GlossarioBUDA",
+  "actionsUrl": "https://github.com/TashiRabten/TradutorBUDA/actions",
+  "apps": [
+    {
+      "name": "TradutorBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\tradutorbuda",
+      "tagPrefix": "tradutor-buda-v",
+      "workflow": "build-app-installers.yml",
+      "releaseBranch": "tradutor-buda",
+      "versionFromGitTag": "tradutor-buda-v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" },
+        { "name": "publish", "value": "{publish}" },
+        { "name": "release_notes", "value": "{notes}" }
+      ]
+    },
+    {
+      "name": "GlossarioBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\GlossarioBuda_Compacto\\glossarioBUDA",
+      "tagPrefix": "glossario-v",
+      "workflow": "build-app-installers.yml",
+      "releaseBranch": "compact-version",
+      "versionFromGitTag": "glossario-v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" },
+        { "name": "publish", "value": "{publish}" },
+        { "name": "release_notes", "value": "{notes}" }
+      ]
+    },
+    {
+      "name": "SegBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\tradutorbuda",
+      "tagPrefix": "segbuda-v",
+      "workflow": "build-segbuda.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "segbuda-v*",
+      "uploadScript": "scripts\\upload-segbuda-models.ps1",
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" },
+        { "name": "models_release_tag", "value": "segbuda-models-v1" },
+        { "name": "publish_release_tag", "value": "segbuda-v{version}", "onlyIfPublish": true }
+      ]
+    },
+    {
+      "name": "Namsel",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\tradutorbuda",
+      "tagPrefix": "namsel-v",
+      "workflow": "build-namsel.yml",
+      "releaseBranch": "Namsel",
+      "versionFromGitTag": "namsel-v*",
+      "uploadScript": "scripts\\upload-namsel-models.ps1",
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" },
+        { "name": "models_release_tag", "value": "namsel-models-v1" },
+        { "name": "publish", "value": "{publish}" }
+      ]
+    },
+    {
+      "name": "DadosBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\tradutorbuda",
+      "tagPrefix": "dadosbuda-v",
+      "workflow": "build-dadosbuda.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "dadosbuda-v*",
+      "uploadScript": "scripts\\upload-dadosbuda-db.ps1",
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" },
+        { "name": "db_release_tag", "value": "dadosbuda-db-v1" },
+        { "name": "publish_release_tag", "value": "dadosbuda-v{version}", "onlyIfPublish": true },
+        { "name": "release_notes", "value": "{notes}" }
+      ]
+    },
+    {
+      "name": "LegendasBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\LegendasBUDA",
+      "tagPrefix": "legendas-v",
+      "workflow": "build-app-installers.yml",
+      "releaseBranch": "legendas-buda",
+      "versionFromGitTag": "legendas-v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" },
+        { "name": "publish", "value": "{publish}" },
+        { "name": "release_notes", "value": "{notes}" }
+      ]
+    },
+    {
+      "name": "LiturgiaBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\LiturgiaBUDA",
+      "tagPrefix": "v",
+      "workflow": "build-windows.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
+    },
+    {
+      "name": "MantraCountUI",
+      "repoRoot": "D:\\APPS\\MantraCountUI",
+      "tagPrefix": "v",
+      "workflow": "build-dmg.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
+    },
+    {
+      "name": "WorkLogUI",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\WorkLogUI",
+      "tagPrefix": "v",
+      "workflow": "build-installers.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [ { "name": "version", "value": "{version}" } ]
+    },
+    {
+      "name": "LeitorBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\LeitorBUDA",
+      "tagPrefix": "v",
+      "workflow": "build-installers.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [ { "name": "version", "value": "{version}" } ]
+    },
+    {
+      "name": "DemograficoBUDA",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\DemograficoBUDA",
+      "tagPrefix": "v",
+      "workflow": "build-installers.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [ { "name": "version", "value": "{version}" } ]
+    }
+  ],
+  "_tasks_comment": "Standalone commands that are not app releases (one-off utilities). runOn 'mac' commands cannot execute on Windows — InstaladorBUDA shows + copies them to paste into the Mac VM. runOn 'local' commands run in a console (or print under Dry run). cwdRepo names an app whose repoRoot is the working directory.",
+  "tasks": [
+    {
+      "name": "Rebuild Tesseract Intel bundle  (run on your Intel Mac VM)",
+      "runOn": "mac",
+      "cwdRepo": "TradutorBUDA",
+      "command": "bash scripts/build-tesseract-mac.sh --upload"
+    },
+    {
+      "name": "Trigger Tesseract CI  (build arm64 + fetch Intel)",
+      "runOn": "local",
+      "cwdRepo": "TradutorBUDA",
+      "command": "gh workflow run build-tesseract-portable.yml"
+    }
+  ]
+}
