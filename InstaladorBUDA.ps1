@@ -163,6 +163,96 @@ function Build-DispatchCommands {
     return @("gh workflow run $($app.workflow) $($argList -join ' ')")
 }
 
+# ── Publish-from-run helpers (publish an already-built run, no rebuild) ───────
+# Parse the owner/repo slug out of a git remote URL (https or ssh).
+function Get-RepoSlug {
+    param([string]$repoRoot)
+    try {
+        $url = & git -C $repoRoot remote get-url origin 2>$null
+        if ($LASTEXITCODE -eq 0 -and $url -and $url -match '[:/]([^/:]+/[^/]+?)(?:\.git)?/?\s*$') {
+            return $Matches[1]
+        }
+    } catch { }
+    return $null
+}
+
+# The repo whose Actions runs hold this app's build (always the app's own repo).
+function Resolve-AppRepo { param($app) Get-RepoSlug $app.repoRoot }
+
+# The repo that hosts this app's RELEASES (GlossarioBUDA for the BUDA apps; the app's
+# own repo for the standalone utilities). Explicit apps.json releaseRepo wins; else
+# fall back to releaseRepoDefault.
+function Resolve-ReleaseRepo {
+    param($app)
+    if ($app.releaseRepo) { return $app.releaseRepo }
+    return $ReleaseRepo
+}
+
+# Recent runs for a workflow (newest first), as objects with databaseId/conclusion/etc.
+function Get-WorkflowRuns {
+    param([string]$repo, [string]$workflow, [int]$limit = 20)
+    if (-not $repo -or -not $workflow) { return @() }
+    try {
+        $json = & gh run list --repo $repo --workflow $workflow --limit $limit `
+            --json databaseId,displayTitle,conclusion,status,createdAt,headBranch 2>$null
+        if ($LASTEXITCODE -eq 0 -and $json) { return @($json | ConvertFrom-Json) }
+    } catch { }
+    return @()
+}
+
+# Workflow file names available in a repo (for the workflow picker dropdown).
+function Get-RepoWorkflows {
+    param([string]$repo)
+    if (-not $repo) { return @() }
+    try {
+        $out = & gh api "repos/$repo/actions/workflows" --jq '.workflows[].path' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return @($out | ForEach-Object { Split-Path $_ -Leaf }) }
+    } catch { }
+    return @()
+}
+
+# Publish a FINISHED run's installer artifacts to the release WITHOUT rebuilding:
+# download the run's .exe/.pkg/.dmg/.msi artifacts and attach them to the release tag
+# (creating the release on the right repo/branch if needed, then un-drafting it). The
+# generic, per-app version of publish-segbuda-from-run.yml.
+function Build-PublishFromRunCommands {
+    param($app, [string]$AppRepo, [string]$RunId, [string]$Version, [string]$ReleaseNotes = '')
+    $relRepo = Resolve-ReleaseRepo $app
+    $tag     = "$($app.tagPrefix)$Version"
+    $target  = $app.releaseBranch
+    $title   = ("$($app.name) $tag").Replace("'", "''")
+    $notes   = if ([string]::IsNullOrWhiteSpace($ReleaseNotes)) {
+        "$($app.name) $tag - published from run $RunId (no rebuild)."
+    } else { $ReleaseNotes }
+    $notes     = $notes.Replace("'", "''")
+    $targetArg = if ([string]::IsNullOrWhiteSpace($target))  { '' } else { "--target '$target'" }
+    $repoArg   = if ([string]::IsNullOrWhiteSpace($AppRepo)) { '' } else { "--repo '$AppRepo'" }
+    return @(
+        "`$dl = Join-Path `$env:TEMP 'instalador-pub-$RunId'; if (Test-Path `$dl) { Remove-Item -Recurse -Force `$dl }",
+        "gh run download $RunId $repoArg --dir `$dl",
+        "`$inst = Get-ChildItem -Path `$dl -Recurse -File | Where-Object { `$_.Extension -in '.exe','.pkg','.dmg','.msi' }",
+        "if (-not `$inst) { throw 'No installers (.exe/.pkg/.dmg/.msi) in run $RunId artifacts. A green TEST run has them; a publish run uploads to the release directly - use Un-draft instead.' }",
+        "Write-Host ('Found ' + `$inst.Count + ' installer(s):'); `$inst | ForEach-Object { Write-Host ('  ' + `$_.Name) }",
+        "if (-not (gh release view '$tag' --repo '$relRepo' 2>`$null)) { gh release create '$tag' --repo '$relRepo' $targetArg --title '$title' --notes '$notes' --draft }",
+        "gh release upload '$tag' `$inst.FullName --repo '$relRepo' --clobber",
+        "gh release edit '$tag' --repo '$relRepo' --draft=false | Out-Null",
+        "Write-Host 'Published $tag to $relRepo from run $RunId - no rebuild.' -ForegroundColor Green"
+    )
+}
+
+# Un-draft a release that a publish RUN already built + uploaded to (but didn't
+# finalize). No artifacts, no rebuild - just flip the draft flag public.
+function Build-UndraftCommands {
+    param($app, [string]$Version)
+    $relRepo = Resolve-ReleaseRepo $app
+    $tag = "$($app.tagPrefix)$Version"
+    return @(
+        "if (-not (gh release view '$tag' --repo '$relRepo' 2>`$null)) { throw 'Release $tag not found on $relRepo - nothing to un-draft.' }",
+        "gh release edit '$tag' --repo '$relRepo' --draft=false",
+        "Write-Host 'Un-drafted $tag on $relRepo - now public (no rebuild).' -ForegroundColor Green"
+    )
+}
+
 function Resolve-TaskRepoRoot {
     param($task)
     if ($task.repoRoot) { return $task.repoRoot }
@@ -216,17 +306,36 @@ function Show-ConsoleMenu {
         Write-Host "  a) Upload models$(if($canUpload){''}else{'  (n/a)'})"
         Write-Host "  b) Deploy — push tag $($app.tagPrefix)$ver"
         Write-Host "  c) Trigger workflow (no tag)"
+        Write-Host "  d) Publish from existing run (no rebuild)"
+        Write-Host "  u) Un-draft release $($app.tagPrefix)$ver"
         $act = Read-Host "Action"
 
         $notes = ''
-        # Both Deploy (push tag, 'b') and Trigger (dispatch, 'c') use the note as the release body.
-        if ($act -eq 'c' -or $act -eq 'b') {
+        # Deploy (b), Trigger (c) and Publish-from-run (d) use the note as the release body.
+        if ($act -eq 'c' -or $act -eq 'b' -or $act -eq 'd') {
             $notes = Read-Host "Release notes (optional, single line)"
         }
         $cmds = switch ($act) {
             'a' { Build-UploadCommands $app }
             'b' { Build-TagCommands $app $ver $notes }
             'c' { Build-DispatchCommands $app $ver $true $notes }
+            'u' { Build-UndraftCommands $app $ver }
+            'd' {
+                $repo = Resolve-AppRepo $app
+                $runs = Get-WorkflowRuns $repo $app.workflow
+                if (-not $runs -or $runs.Count -eq 0) { Write-Host "No runs found for $($app.workflow)." -ForegroundColor Yellow; @() }
+                else {
+                    for ($i = 0; $i -lt [Math]::Min($runs.Count, 15); $i++) {
+                        $rr = $runs[$i]
+                        $when = try { ([datetime]$rr.createdAt).ToLocalTime().ToString('MM-dd HH:mm') } catch { "$($rr.createdAt)" }
+                        Write-Host ("  $($i + 1)) $when  [$($rr.conclusion)]  $($rr.displayTitle)  ($($rr.headBranch))")
+                    }
+                    $rs = Read-Host "Run # to publish"; $ri = 0
+                    if ([int]::TryParse($rs, [ref]$ri) -and $ri -ge 1 -and $ri -le $runs.Count) {
+                        Build-PublishFromRunCommands $app $repo "$($runs[$ri - 1].databaseId)" $ver $notes
+                    } else { @() }
+                }
+            }
             default { @() }
         }
         if (-not $cmds) { Write-Host "Nothing to do." -ForegroundColor Yellow; continue }
@@ -260,7 +369,7 @@ function Show-Gui {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'InstaladorBUDA'
-    $form.Size = New-Object System.Drawing.Size(600, 760)
+    $form.Size = New-Object System.Drawing.Size(600, 900)
     $form.StartPosition = 'CenterScreen'
     $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
@@ -301,9 +410,36 @@ function Show-Gui {
     $btnActions.Text = 'Open Actions page'; $btnActions.Location = '365,68'; $btnActions.Size = '160,28'
     $grp.Controls.AddRange(@($btnUpload, $btnDeploy, $btnDispatch, $btnCopy, $btnActions))
 
+    # ── Publish from an existing run (no rebuild) ──────────────────────────────
+    $grpPub = New-Object System.Windows.Forms.GroupBox
+    $grpPub.Text = 'Publish from existing run (no rebuild)'
+    $grpPub.Location = '20,256'; $grpPub.Size = '545,144'
+
+    $lblWf = New-Object System.Windows.Forms.Label
+    $lblWf.Text = 'Workflow:'; $lblWf.Location = '12,28'; $lblWf.Size = '64,22'
+    $cmbWf = New-Object System.Windows.Forms.ComboBox
+    $cmbWf.Location = '80,26'; $cmbWf.Size = '300,24'; $cmbWf.DropDownStyle = 'DropDown'
+    $btnLoadRuns = New-Object System.Windows.Forms.Button
+    $btnLoadRuns.Text = 'Load runs'; $btnLoadRuns.Location = '390,25'; $btnLoadRuns.Size = '140,28'
+
+    $lblRun = New-Object System.Windows.Forms.Label
+    $lblRun.Text = 'Run:'; $lblRun.Location = '12,62'; $lblRun.Size = '64,22'
+    $cmbRun = New-Object System.Windows.Forms.ComboBox
+    $cmbRun.Location = '80,60'; $cmbRun.Size = '450,24'; $cmbRun.DropDownStyle = 'DropDownList'
+
+    $btnPubRun = New-Object System.Windows.Forms.Button
+    $btnPubRun.Text = 'Publish selected run'; $btnPubRun.Location = '12,96'; $btnPubRun.Size = '200,32'
+    $btnUndraft = New-Object System.Windows.Forms.Button
+    $btnUndraft.Text = 'Un-draft release'; $btnUndraft.Location = '220,96'; $btnUndraft.Size = '150,32'
+    $btnRelPage = New-Object System.Windows.Forms.Button
+    $btnRelPage.Text = 'Open release'; $btnRelPage.Location = '378,96'; $btnRelPage.Size = '152,32'
+
+    $grpPub.Controls.AddRange(@($lblWf, $cmbWf, $btnLoadRuns, $lblRun, $cmbRun, $btnPubRun, $btnUndraft, $btnRelPage))
+    $script:LoadedRuns = @()
+
     # Tasks (non-release utilities, e.g. rebuild the Tesseract bundle)
     $grpTask = New-Object System.Windows.Forms.GroupBox
-    $grpTask.Text = 'Tasks'; $grpTask.Location = '20,256'; $grpTask.Size = '545,64'
+    $grpTask.Text = 'Tasks'; $grpTask.Location = '20,408'; $grpTask.Size = '545,64'
     $cmbTask = New-Object System.Windows.Forms.ComboBox
     $cmbTask.Location = '15,26'; $cmbTask.Size = '385,24'; $cmbTask.DropDownStyle = 'DropDownList'
     $Tasks | ForEach-Object { [void]$cmbTask.Items.Add($_.name) }
@@ -315,8 +451,8 @@ function Show-Gui {
 
     # Release notes — becomes the GitHub Release body (apps whose dispatchInputs use {notes}).
     $grpNotes = New-Object System.Windows.Forms.GroupBox
-    $grpNotes.Text = 'Release notes (Deploy / Trigger use this as the release message)'
-    $grpNotes.Location = '20,326'; $grpNotes.Size = '545,120'
+    $grpNotes.Text = 'Release notes (Deploy / Trigger / Publish use this as the release message)'
+    $grpNotes.Location = '20,478'; $grpNotes.Size = '545,120'
     $txtNotes = New-Object System.Windows.Forms.TextBox
     $txtNotes.Location = '15,24'; $txtNotes.Size = '515,82'
     $txtNotes.Multiline = $true; $txtNotes.ScrollBars = 'Vertical'
@@ -325,20 +461,20 @@ function Show-Gui {
     $grpNotes.Controls.Add($txtNotes)
 
     $logBox = New-Object System.Windows.Forms.TextBox
-    $logBox.Location = '20,456'; $logBox.Size = '545,180'
+    $logBox.Location = '20,608'; $logBox.Size = '545,150'
     $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'
     $logBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
     $logBox.ForeColor = [System.Drawing.Color]::Gainsboro
     $logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
 
     $status = New-Object System.Windows.Forms.Label
-    $status.Location = '20,644'; $status.Size = '545,30'
+    $status.Location = '20,766'; $status.Size = '545,30'
     $gitOk = if ($HasGit) { 'git OK' } else { 'git MISSING' }
     $ghOk  = if ($HasGh)  { 'gh OK' }  else { 'gh MISSING' }
     $status.Text = "$gitOk   |   $ghOk   |   release repo: $ReleaseRepo"
     $status.ForeColor = if ($HasGit -and $HasGh) { [System.Drawing.Color]::ForestGreen } else { [System.Drawing.Color]::Firebrick }
 
-    $form.Controls.AddRange(@($lblTarget, $cmbTarget, $lblVer, $txtVer, $lblCur, $chkPublish, $chkDry, $grp, $grpTask, $grpNotes, $logBox, $status))
+    $form.Controls.AddRange(@($lblTarget, $cmbTarget, $lblVer, $txtVer, $lblCur, $chkPublish, $chkDry, $grp, $grpPub, $grpTask, $grpNotes, $logBox, $status))
 
     $appendLog = { param($text) $logBox.AppendText(("{0}  {1}{2}" -f (Get-Date -Format 'HH:mm:ss'), $text, [Environment]::NewLine)) }
 
@@ -354,6 +490,13 @@ function Show-Gui {
         $canUpload = [bool]$app.uploadScript -or (@($app.models).Count -gt 0)
         $btnUpload.Enabled = $canUpload
         $btnUpload.Text = if ($canUpload) { '1. Upload models' } else { '1. Upload models (n/a)' }
+        # Publish-from-run pickers follow the selected app.
+        if ($cmbWf) {
+            $cmbWf.Items.Clear(); $cmbWf.Text = $app.workflow
+            $cmbRun.Items.Clear(); $script:LoadedRuns = @()
+            $relRepo = Resolve-ReleaseRepo $app
+            $grpPub.Text = "Publish from existing run (no rebuild)  ->  $relRepo"
+        }
     }
 
     $run = {
@@ -429,6 +572,74 @@ function Show-Gui {
         } else { & $appendLog "No command yet — click a step first." }
     })
     $btnActions.Add_Click({ Start-Process $ActionsUrl | Out-Null })
+
+    # ── Publish-from-run handlers ──────────────────────────────────────────────
+    # Populate the workflow picker lazily from the repo when its dropdown opens.
+    $cmbWf.Add_DropDown({
+        if ($cmbWf.Items.Count -le 1 -and $HasGh) {
+            $app = Get-App $cmbTarget.SelectedItem
+            if ($app) {
+                $cur = $cmbWf.Text
+                $wfs = Get-RepoWorkflows (Resolve-AppRepo $app)
+                $cmbWf.Items.Clear()
+                $wfs | ForEach-Object { [void]$cmbWf.Items.Add($_) }
+                if ($cur) { $cmbWf.Text = $cur }
+            }
+        }
+    })
+    $btnLoadRuns.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        if (-not $HasGh) { & $appendLog 'gh not found - cannot list runs.'; return }
+        $repo = Resolve-AppRepo $app
+        if (-not $repo) { & $appendLog "Could not resolve the GitHub repo for $($app.name) (no git remote?)."; return }
+        $wf = $cmbWf.Text.Trim(); if (-not $wf) { $wf = $app.workflow; $cmbWf.Text = $wf }
+        & $appendLog "Loading runs: $wf @ $repo ..."
+        $script:LoadedRuns = Get-WorkflowRuns $repo $wf
+        $cmbRun.Items.Clear()
+        if ($script:LoadedRuns.Count -eq 0) { & $appendLog 'No runs found (or gh error / not authenticated).'; return }
+        foreach ($r in $script:LoadedRuns) {
+            $when  = try { ([datetime]$r.createdAt).ToLocalTime().ToString('MM-dd HH:mm') } catch { "$($r.createdAt)" }
+            $state = if ($r.conclusion) { $r.conclusion } else { $r.status }
+            [void]$cmbRun.Items.Add(("{0}  [{1}]  {2}  ({3})" -f $when, $state, $r.displayTitle, $r.headBranch))
+        }
+        $okIdx = -1
+        for ($i = 0; $i -lt $script:LoadedRuns.Count; $i++) {
+            if ($script:LoadedRuns[$i].conclusion -eq 'success') { $okIdx = $i; break }
+        }
+        $cmbRun.SelectedIndex = if ($okIdx -ge 0) { $okIdx } else { 0 }
+        & $appendLog "Loaded $($cmbRun.Items.Count) run(s); newest successful preselected."
+    })
+    $btnPubRun.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        $v = $txtVer.Text.Trim()
+        if (-not $v) { & $appendLog 'Enter the version to publish AS (the release tag) first.'; return }
+        if ($cmbRun.SelectedIndex -lt 0 -or $cmbRun.SelectedIndex -ge $script:LoadedRuns.Count) {
+            & $appendLog 'Pick a run first - click "Load runs".'; return
+        }
+        $r = $script:LoadedRuns[$cmbRun.SelectedIndex]
+        if ($r.conclusion -and $r.conclusion -ne 'success') {
+            & $appendLog "Note: selected run conclusion is '$($r.conclusion)' (not success) - its installers may be missing."
+        }
+        $cmds = Build-PublishFromRunCommands $app (Resolve-AppRepo $app) "$($r.databaseId)" $v $txtNotes.Text
+        & $run $cmds "Publish $($app.name) v$v from run $($r.databaseId) (no rebuild)" $true $app.repoRoot
+    })
+    $btnUndraft.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        $v = $txtVer.Text.Trim()
+        if (-not $v) { & $appendLog 'Enter the version (release tag) to un-draft first.'; return }
+        & $run (Build-UndraftCommands $app $v) "Un-draft $($app.name) v$v" $true $app.repoRoot
+    })
+    $btnRelPage.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        $v = $txtVer.Text.Trim(); if (-not $v) { $v = (Get-CurrentVersion $app) }
+        $relRepo = Resolve-ReleaseRepo $app
+        Start-Process ("https://github.com/{0}/releases/tag/{1}{2}" -f $relRepo, $app.tagPrefix, $v) | Out-Null
+        & $appendLog "Opened release page: $relRepo $($app.tagPrefix)$v"
+    })
     $btnTask.Add_Click({
         if ($cmbTask.SelectedIndex -lt 0) { return }
         $task = $Tasks[$cmbTask.SelectedIndex]

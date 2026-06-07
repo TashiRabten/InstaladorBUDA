@@ -1,9 +1,10 @@
 # InstaladorBUDA
 
 A small **standalone deployment cockpit** for the BUDA apps. Pick a target app and a
-version, then **Upload models**, **Deploy (push tag)**, or **Trigger workflow** — without
-memorizing any commands. Every action has a **command fallback**: tick *Dry run* to print
-the exact command, copy it, or let it run in a real console window.
+version, then **Upload models**, **Deploy (push tag)**, **Trigger workflow**, or
+**Publish from an existing run (no rebuild)** — without memorizing any commands. Every
+action has a **command fallback**: tick *Dry run* to print the exact command, copy it, or
+let it run in a real console window.
 
 It is **fully config-driven**. The app list lives in [`apps.json`](apps.json) next to the
 program. **Adding a new app is a JSON edit — no code changes.**
@@ -64,6 +65,33 @@ The three apps already wired up:
 
 ---
 
+## 2b. Publish from an existing run — no rebuild
+
+The **"Publish from existing run (no rebuild)"** panel attaches installers that a *previous*
+build already produced to a release, **without re-running the slow build** (the macOS leg
+especially). Use it when a build is green but wasn't published, or a publish run built but
+didn't finalize.
+
+| Control | What it does |
+|---|---|
+| **Workflow** | Defaults to the app's build workflow; the dropdown lists every workflow in the repo so you can pick another. |
+| **Load runs** | Lists the latest 20 runs of that workflow (date, conclusion, title, branch) and preselects the newest **successful** one. |
+| **Publish selected run** | Downloads that run's installer **artifacts** (`.exe/.pkg/.dmg/.msi`) and uploads them to the release tag `tagPrefix+version` on the app's release repo — creating the release (targeting `releaseBranch`) if needed, then un-drafting it. **No rebuild.** |
+| **Un-draft release** | Flips an existing **draft** release public (`--draft=false`). Use when a *publish* run already uploaded installers straight to a draft release (so there are no artifacts to download) but didn't finalize. |
+| **Open release** | Opens the release page for `tagPrefix+version` in the browser. |
+
+**Artifacts vs. draft — which to use:** the build workflows upload installers as run
+**artifacts on test runs**, but on **publish runs** they upload **straight to the release**
+(a draft) and never create artifacts. So:
+- green **test** run → **Publish selected run** (downloads its artifacts).
+- **publish** run that built but didn't finalize → **Un-draft release** (no artifacts exist).
+
+The release tag/repo come from `version`, `tagPrefix`, and `releaseRepo`/`releaseBranch` in
+`apps.json` — BUDA apps publish to `TashiRabten/GlossarioBUDA`; standalone apps to their own
+repo (the group header shows the resolved release repo).
+
+---
+
 ## 3. Adding a new app
 
 ### 3a. Add a block to `apps.json`
@@ -108,7 +136,8 @@ The three apps already wired up:
 | `repoRoot` | ✅ | Absolute path to the app's git repo on your machine. May be any repo — InstaladorBUDA can drive many. |
 | `tagPrefix` | ✅ | The release tag is `tagPrefix + version`. |
 | `workflow` | ✅ | Workflow file name (for *Trigger workflow*). |
-| `releaseBranch` | — | `target_commitish` if the updater filters by branch; otherwise `""`. |
+| `releaseBranch` | — | `target_commitish` if the updater filters by branch; otherwise `""`. Also used as `--target` when *Publish from run* creates the release. |
+| `releaseRepo` | — | Repo that hosts this app's **releases**. Omit for BUDA apps (defaults to `releaseRepoDefault` = `TashiRabten/GlossarioBUDA`); set it to the app's own `owner/repo` for standalone apps that publish to themselves. Used by *Publish from run* / *Un-draft*. |
 | `versionFile` + `versionRegex` | one of these¹ | Read current version from a file (capture group 1). |
 | `versionFromGitTag` | one of these¹ | Or read the highest existing tag matching this glob. |
 | `uploadScript` | — | A `.ps1` (relative to `repoRoot`) that uploads the models. Preferred if present. |
