@@ -59,7 +59,6 @@
       "models": [],
       "dispatchInputs": [
         { "name": "version", "value": "{version}" },
-        { "name": "models_release_tag", "value": "namsel-models-v1" },
         { "name": "publish", "value": "{publish}" }
       ]
     },
