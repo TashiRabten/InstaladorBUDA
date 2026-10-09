@@ -42,9 +42,26 @@
       "versionFromGitTag": "segbuda-v*",
       "uploadScript": "scripts\\upload-segbuda-models.ps1",
       "models": [],
+      "uploadModels": [
+        { "name": "segmentation_onnx",       "path": "models\\segmentation_onnx",             "default": true },
+        { "name": "tibetan-upos-onnx",       "path": "models\\tibetan-upos-onnx",             "default": true },
+        { "name": "sanskrit-segmenter-onnx", "path": "models\\sanskrit-segmenter-onnx",       "default": true },
+        { "name": "wav2vec2-tibetan-onnx",   "path": "audio_models\\wav2vec2-tibetan-onnx",   "default": true },
+        { "name": "tibetan-tts-onnx",        "path": "audio_models\\tibetan-tts-onnx",        "default": true },
+        { "name": "cross_encoder_nllb_onnx", "path": "models_extra\\cross_encoder_nllb_onnx", "default": true },
+        { "name": "photilines_onnx",         "path": "bdrc_models",                           "default": true },
+        { "name": "dictionaries",            "path": "models\\dictionaries",                  "default": false },
+        { "name": "whisper-ov-int8",         "path": "audio_models\\whisper-ov-int8",         "default": false }
+      ],
+      "bundles": [
+        { "id": "essential",    "name": "Essential",    "default": true },
+        { "id": "segmentation", "name": "Segmentation", "default": true },
+        { "id": "audio",        "name": "Audio",        "default": true }
+      ],
       "dispatchInputs": [
         { "name": "version", "value": "{version}" },
         { "name": "models_release_tag", "value": "segbuda-models-v1" },
+        { "name": "bundles", "value": "{bundles}" },
         { "name": "publish_release_tag", "value": "segbuda-v{version}", "onlyIfPublish": true }
       ]
     },
@@ -152,6 +169,32 @@
       "uploadScript": null,
       "models": [],
       "dispatchInputs": [ { "name": "version", "value": "{version}" } ]
+    },
+    {
+      "name": "InstaladorBUDA",
+      "_comment": "This cockpit's own repo: no build workflow, so the release steps are off for it — it is here for the Git group (status / add / commit / push).",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\InstaladorBUDA",
+      "releaseRepo": "TashiRabten/InstaladorBUDA",
+      "tagPrefix": "instaladorbuda-v",
+      "workflow": "",
+      "releaseBranch": "",
+      "versionFromGitTag": "instaladorbuda-v*",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
+    },
+        {
+      "name": "Portfolio",
+      "_comment": "Tashi's BUDA suite online Portfolio.",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\BUDA_APPs_Port",
+      "releaseRepo": "TashiRabten/BUDA_APPs_Port",
+      "tagPrefix": "",
+      "workflow": "",
+      "releaseBranch": "",
+      "versionFromGitTag": "",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
     }
   ],
   "_tasks_comment": "Standalone commands that are not app releases (one-off utilities). runOn 'mac' commands cannot execute on Windows — InstaladorBUDA shows + copies them to paste into the Mac VM. runOn 'local' commands run in a console (or print under Dry run). cwdRepo names an app whose repoRoot is the working directory.",

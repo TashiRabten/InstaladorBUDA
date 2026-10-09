@@ -29,9 +29,9 @@ $out  = Join-Path $here 'InstaladorBUDA.exe'
 
 if (-not (Test-Path $src)) { throw "InstaladorBUDA.ps1 not found next to this script ($src)." }
 
-# Default icon: the shared pramana.ico in the TradutorBUDA repo, if reachable.
+# Default icon: the shared pramana.ico next to this script, if present.
 if (-not $Icon) {
-    $guess = Join-Path $here '..\src\main\resources\icons\pramana.ico'
+    $guess = Join-Path $here 'pramana.ico'
     if (Test-Path $guess) { $Icon = (Resolve-Path $guess).Path }
 }
 
@@ -69,6 +69,10 @@ $opts = @{
     InputFile   = $src
     OutputFile  = $out
     noConsole   = $true          # GUI app — no console window
+    STA         = $true          # WinForms needs a single-threaded apartment
+    DPIAware    = $true          # sharp text on a scaled display (125% / 150%). The GUI sizes
+                                 # itself for the real DPI (Px in InstaladorBUDA.ps1), so
+                                 # Windows must not bitmap-stretch the window as well.
     title       = 'InstaladorBUDA'
     product     = 'InstaladorBUDA'
     company     = 'Glossario BUDA'
