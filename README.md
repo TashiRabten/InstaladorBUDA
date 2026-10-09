@@ -4,7 +4,12 @@ A small **standalone deployment cockpit** for the BUDA apps. Pick a target app a
 version, then **Upload models**, **Deploy (push tag)**, **Trigger workflow**, or
 **Publish from an existing run (no rebuild)** — without memorizing any commands. Every
 action has a **command fallback**: tick *Dry run* to print the exact command, copy it, or
-let it run in a real console window.
+let it run — its output streams into the tab's log. After a Deploy or Trigger, the log
+**follows the GitHub build step by step and reports the release** (see 2a), so you don't
+have to open GitHub to see the result.
+
+Each **tab** is an independent job (its own app, version, notes and log); the **+** tab opens
+another, so several releases can run side by side.
 
 It is **fully config-driven**. The app list lives in [`apps.json`](apps.json) next to the
 program. **Adding a new app is a JSON edit — no code changes.**
@@ -48,8 +53,8 @@ Three actions, in order:
 | Action | What it does | When |
 |---|---|---|
 | **Upload models** | Zips large model files and uploads them to a `*-models-*` release (assets too big for git). | Once per app, and again only when a model changes. |
-| **Deploy (push tag)** | `git tag <prefix><version>` + `git push` → the app's build workflow fires, builds installers, and publishes the release. | Every release. |
-| **Trigger workflow** | `gh workflow run …` with the same inputs but **without** a tag. | Test/manual builds, or re-runs. |
+| **Deploy (push tag)** | `git tag <prefix><version>` + `git push` → the app's build workflow fires, builds installers, and publishes the release. Also updates your local git tags, so InstaladorBUDA's next "current version" is correct. For an app with `bundles` (SegBUDA) it first shows the bundle checklist; a subset is written into the annotated tag message as a `Bundles: essential,audio` line, which the build workflow reads on the tag push (and strips from the release notes). All ticked → a plain tag push that builds every bundle. | Every release, including single-bundle SegBUDA releases. |
+| **Trigger workflow** | `gh workflow run …` with the same inputs, dispatched directly (no local `git tag`/`git push`). With *Publish to website* checked, this **does** create/finalize a real tag + release — same `gh release create`/un-draft path as Deploy — just server-side: it doesn't touch your local git tags, so InstaladorBUDA won't know the new version shipped until you `git fetch --tags` (or dry-run/leave *Publish* unchecked for a test build with no release at all). Also offers the SegBUDA bundle checklist (see the `bundles` field below). | Test/manual builds, or re-runs. |
 
 The three apps already wired up:
 
@@ -60,8 +65,46 @@ The three apps already wired up:
 | **Namsel** | `namsel-v1.0.0.5` | `build-namsel.yml` | `v1.0.0.5` (branch `Namsel`) — `NamselOCR_Installer.{exe,pkg}` |
 
 **Typical release:** open InstaladorBUDA → pick the app → the version pre-fills (current +1)
-→ **Upload models** only if a model changed → **Deploy (push tag)** → watch the run on the
-**Actions page** button. Done — the installer lands on the website a couple of minutes later.
+→ **Upload models** only if a model changed → **Deploy (push tag)** → watch the build in the
+tab's log. When it ends, the log shows the release and its files. Done.
+
+---
+
+## 2a. Following the build in the log
+
+After **Deploy** or **Trigger workflow** runs, the same job keeps going: it finds the workflow
+run that the step started (the newest run of the app's `workflow` created after you clicked —
+for Deploy, the run for the pushed tag) and reports it until it finishes, checking every 8 s.
+
+```
+Run 36358766934: https://github.com/TashiRabten/TradutorBUDA/actions/runs/36358766934
+[windows]   ▶ Build installer with Inno Setup
+[windows]   ✓ Build installer with Inno Setup  1m 59s
+[windows]   · Upload .exe artifact (test runs only — not published) (skipped)
+[windows] ✓ success  3m 44s
+Run finished: success in 4m 48s
+
+Release tradutor-buda-v1.7.20 on TashiRabten/GlossarioBUDA: PUBLISHED 2026-09-27 18:32
+  TradutorBUDA-1.7.20-arm64.pkg                    329.9 MB
+  TradutorBUDA-1.7.20.exe                          309.4 MB
+```
+
+| Line | Meaning |
+|---|---|
+| `▶` / `✓` / `✗` / `·` | a step started / succeeded / failed / was skipped (with how long it took) |
+| `Run finished:` | the run's result and total time |
+| `Release …: PUBLISHED` / `DRAFT` | the release on the app's release repo, and each file attached to it. `DRAFT` means it is not public yet — **Un-draft release** publishes it. |
+
+- **Trigger with *Publish* unchecked** is a test build: no release is expected, so the log lists
+  the run's **artifacts** instead (release them later with *Publish selected run*).
+- **Publish selected run** and **Un-draft release** end with the same release report.
+- The **tab title** shows where it is — `waiting for the run...`, `building (1/3 jobs done)`,
+  `checking the release...` — and ends on `done`, or `failed (1)` when the run failed or the
+  release is missing.
+- If the push or dispatch itself fails, it says so and does not wait for a build.
+- While it follows a build the tab is busy; use **+** for another job. Closing the window only
+  stops the following — the build keeps going on GitHub.
+- `-Console` mode reports the same way after it runs the commands.
 
 ---
 
@@ -92,6 +135,60 @@ repo (the group header shows the resolved release repo).
 
 ---
 
+## 2c. Repo visibility (public / private toggle)
+
+A **"Repo visibility"** panel (GUI) / `v`/`p` actions (console) let you flip an app's
+**own repo** — not the release repo — between public and private without leaving the
+dashboard. This is for the common situation where a private repo's Actions minutes run
+out: flip it public to deploy for free, then flip it back private once the build lands.
+
+| Control | What it does |
+|---|---|
+| **(status label)** | Shows the selected app's current visibility, read live via `gh repo view --json visibility`. Turns red when public, green when private, so you don't forget a repo left public. |
+| **Make public** | Runs `gh repo edit <repo> --visibility public --accept-visibility-change-consequences`. Asks for confirmation first (skipped under *Dry run*). |
+| **Make private** | Same, with `--visibility private`. No confirmation prompt — reverting to private is the safe direction. |
+
+This always targets **the app's own repo** (resolved the same way as *Publish from run*,
+from `repoRoot`'s git remote) — that's the repo whose Actions minutes are being spent,
+which is not necessarily `TashiRabten/GlossarioBUDA` (the release repo installers get
+published to). `--accept-visibility-change-consequences` is passed automatically so the
+command doesn't hang waiting on an interactive confirmation `gh` would otherwise print.
+
+**Auth:** this uses the same `gh` CLI session as everything else in InstaladorBUDA — there's
+no separate token field. If you want a *different* GitHub account/token than whatever `gh`
+is currently logged in as, run `gh auth login` (or `gh auth switch`) once in a terminal;
+InstaladorBUDA picks up whatever `gh` is authenticated as. `gh auth login` accepts a
+personal access token directly (`gh auth login --with-token < token.txt`) if you'd rather
+not go through the browser flow. Changing visibility requires the token/account to have
+admin rights on the repo.
+
+## 2d. Git (status / add / commit / push)
+
+A **"Git"** group runs git in the selected app's `repoRoot`. Its title shows the app, the
+current branch and the folder (`Git -> TradutorBUDA [main] C:\...`); the buttons are off when
+the folder is not a git repo. Output goes to the tab's log like any other job.
+
+| Control | What it does |
+|---|---|
+| **Status** | `git status` — read-only, so it runs without the confirmation dialog. |
+| **Add** + field | `git add -- <paths>`: paths separated by spaces, a path with spaces in `"double quotes"` (`"Screenshot 2026-09-02 171631.png" README.md`), `.` for every change. Shows `git status --short --branch` after. |
+| **Commit** + Message | `git commit -F <file>`: the message box can hold several lines, accents and quotes — it reaches git exactly as typed (it travels base64-encoded through a temp file, like the release note). Shows the new commit and the status after. |
+| **Push** | `git push` of the current branch to its upstream — never `--force`. |
+
+`core.quotepath=false` is passed, so file names with accents or Tibetan print as written. Add,
+Commit and Push ask for confirmation (skipped under *Dry run*, which only prints the commands).
+InstaladorBUDA's own repo is in `apps.json` too (no build workflow, so its release steps are
+off) — pick it as the target to commit and push changes to this cockpit.
+
+## 2e. Update (rebuild + restart)
+
+The **Update (rebuild + restart)** button at the top of the window rebuilds `InstaladorBUDA.exe`
+from `InstaladorBUDA.ps1` and reopens it. It closes the window (asking first, and saying which
+jobs it would stop), then a console window waits for it to exit, runs `build-exe.ps1` and starts
+the new exe. If the build fails, that console stays open with the error and the old exe (or the
+`.ps1`) is started instead. The line beside the button shows when the running exe was built, so
+you can see the update took effect. The button is off when `build-exe.ps1` is not next to the exe.
+
 ## 3. Adding a new app
 
 ### 3a. Add a block to `apps.json`
@@ -119,6 +216,17 @@ repo (the group header shows the resolved release repo).
     ]}
   ],
 
+  // OPTIONAL, only with uploadScript: a per-model picker (checklist in the GUI, a
+  // numbered prompt in -Console). Each entry's "path" (relative to repoRoot) is checked
+  // with Test-Path so a model whose folder isn't on THIS machine shows "not found
+  // locally" and starts unchecked. "default": true pre-checks it (when found). The
+  // upload script itself must accept a matching -Models [string[]] parameter — see
+  // upload-segbuda-models.ps1. Omit entirely to just run uploadScript with no args.
+  "uploadModels": [
+    { "name": "big-model", "path": "models\\big-model", "default": true },
+    { "name": "extra-model", "path": "models\\extra-model", "default": false }
+  ],
+
   // Inputs passed to `gh workflow run`. {version} and {publish} are substituted.
   "dispatchInputs": [
     { "name": "version", "value": "{version}" },
@@ -142,7 +250,9 @@ repo (the group header shows the resolved release repo).
 | `versionFromGitTag` | one of these¹ | Or read the highest existing tag matching this glob. |
 | `uploadScript` | — | A `.ps1` (relative to `repoRoot`) that uploads the models. Preferred if present. |
 | `models` | — | Declarative assets to zip+upload when there is no `uploadScript`. |
-| `dispatchInputs` | ✅ | `-f name=value` pairs for `gh workflow run`; `{version}`/`{publish}` are templated; `onlyIfPublish` skips the input unless *Publish* is ticked. |
+| `uploadModels` | — | Per-model checklist shown before running `uploadScript` (checkboxes in the GUI, numbered prompt in `-Console`); passes the checked names as `-Models 'a','b',...`. Missing-on-this-machine folders are flagged and start unchecked. Omit to just run `uploadScript` with no args. |
+| `bundles` | — | Per-bundle checklist shown before *Deploy* and *Trigger workflow* (checkboxes in the GUI, numbered prompt in `-Console`). Lets one tier ship without rebuilding the others. *Trigger workflow* passes the checked ids as the `{bundles}` dispatch-input placeholder (comma-joined, e.g. `essential,audio`); *Deploy* writes them as a `Bundles: <ids>` line in the annotated tag message, since a tag push carries no inputs — `build-segbuda.yml` reads that line. Every bundle ticked → no line, all bundles build. |
+| `dispatchInputs` | ✅ | `-f name=value` pairs for `gh workflow run`; `{version}`/`{publish}`/`{bundles}` are templated; `onlyIfPublish` skips the input unless *Publish* is ticked. |
 
 ¹ If neither is given, the version defaults to `1.0.0` (still editable in the UI).
 
