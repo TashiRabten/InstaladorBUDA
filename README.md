@@ -5,8 +5,8 @@ version, then **Upload models**, **Deploy (push tag)**, **Trigger workflow**, or
 **Publish from an existing run (no rebuild)** — without memorizing any commands. Every
 action has a **command fallback**: tick *Dry run* to print the exact command, copy it, or
 let it run — its output streams into the tab's log. After a Deploy or Trigger, the log
-**follows the GitHub build step by step and reports the release** (see 2a), so you don't
-have to open GitHub to see the result.
+**follows the GitHub build step by step and reports the release or image publication**
+(see 2a), so you don't have to open GitHub to see the result.
 
 Each **tab** is an independent job (its own app, version, notes and log); the **+** tab opens
 another, so several releases can run side by side.
@@ -38,11 +38,12 @@ to run elsewhere.
 
 ---
 
-## 2. The deployment model (how a release reaches the website)
+## 2. The deployment model (how a release reaches users)
 
-All apps publish GitHub Releases into **one release repo** (`TashiRabten/GlossarioBUDA`),
-which the website and the in-app updaters read. Each app is distinguished by its **tag**
-and/or **target branch**. The single rule that ties it together:
+Desktop apps publish GitHub Releases into **one release repo** (`TashiRabten/GlossarioBUDA`),
+which the website and in-app updaters read. The Namsel daemon publishes a versioned image
+to GHCR; Flux watches that image and updates the Kubernetes deployment. Each target is
+distinguished by its **tag** and/or **workflow**. For GitHub Releases, the rule is:
 
 > **The git tag is the source of the version.** Push `…-v<version>` and that exact version
 > is injected into the installer, the release, and what the app shows at runtime. You never
@@ -53,20 +54,29 @@ Three actions, in order:
 | Action | What it does | When |
 |---|---|---|
 | **Upload models** | Zips large model files and uploads them to a `*-models-*` release (assets too big for git). | Once per app, and again only when a model changes. |
-| **Deploy (push tag)** | `git tag <prefix><version>` + `git push` → the app's build workflow fires, builds installers, and publishes the release. Also updates your local git tags, so InstaladorBUDA's next "current version" is correct. For an app with `bundles` (SegBUDA) it first shows the bundle checklist; a subset is written into the annotated tag message as a `Bundles: essential,audio` line, which the build workflow reads on the tag push (and strips from the release notes). All ticked → a plain tag push that builds every bundle. | Every release, including single-bundle SegBUDA releases. |
-| **Trigger workflow** | `gh workflow run …` with the same inputs, dispatched directly (no local `git tag`/`git push`). With *Publish to website* checked, this **does** create/finalize a real tag + release — same `gh release create`/un-draft path as Deploy — just server-side: it doesn't touch your local git tags, so InstaladorBUDA won't know the new version shipped until you `git fetch --tags` (or dry-run/leave *Publish* unchecked for a test build with no release at all). Also offers the SegBUDA bundle checklist (see the `bundles` field below). | Test/manual builds, or re-runs. |
+| **Deploy (push tag)** | `git tag <prefix><version>` + `git push` → the app's build workflow fires. Desktop targets publish installers and a release; a `container-image` target publishes its image and reports the Flux handoff. Also updates your local git tags, so the next "current version" is correct. | Releases; for SegBUDA, also supports one selected bundle. |
+| **Trigger workflow** | `gh workflow run …` with the configured inputs, dispatched directly (no local `git tag`/`git push`). Desktop targets can publish a GitHub Release; a `container-image` target always publishes the image. A dispatched version does not update local tags. | Test/manual builds, or re-runs. |
 
-The three apps already wired up:
+Current desktop and daemon targets:
 
-| App | Tag pushed | Build workflow | Release on GlossarioBUDA |
+| App | Tag pushed | Build workflow | Published output |
 |---|---|---|---|
-| **TradutorBUDA** | `tradutor-buda-v1.4.5` | `build-app-installers.yml` | `v1.4.5` (branch `tradutor-buda`) — `TradutorBUDA-1.4.5.{exe,pkg}` |
-| **SegBUDA** | `segbuda-v1.0.0` | `build-segbuda.yml` | `segbuda-v1.0.0` — tiered `SegBUDA-*-Setup.exe` / `*.pkg` |
-| **Namsel** | `namsel-v1.0.0.5` | `build-namsel.yml` | `v1.0.0.5` (branch `Namsel`) — `NamselOCR_Installer.{exe,pkg}` |
+| **TradutorBUDA** | `tradutor-buda-v1.4.5` | `build-app-installers.yml` | GlossarioBUDA release `v1.4.5` — `TradutorBUDA-1.4.5.{exe,pkg}` |
+| **SegBUDA** | `segbuda-v1.0.0` | `build-segbuda.yml` | GlossarioBUDA release `segbuda-v1.0.0` — tiered installers |
+| **Namsel** | `namsel-v1.0.0.5` | `build-namsel.yml` | GlossarioBUDA release `v1.0.0.5` — `NamselOCR_Installer.{exe,pkg}` |
+| **Namsel Kubernetes release** | `namsel-ocr-v1.3.5` | `publish-namsel-ocr-image.yml` | GHCR image `ghcr.io/tashirabten/namsel-ocr:1.3.5`; Flux updates the deployment manifest |
 
-**Typical release:** open InstaladorBUDA → pick the app → the version pre-fills (current +1)
+**Typical desktop release:** open InstaladorBUDA → pick the app → the version pre-fills (current +1)
 → **Upload models** only if a model changed → **Deploy (push tag)** → watch the build in the
 tab's log. When it ends, the log shows the release and its files. Done.
+
+For **Namsel Kubernetes release**, use the versioned tag flow. The workflow writes the
+tag's version into `docker/version.properties` before building the image. Flux's
+`ImageUpdateAutomation` then commits the matching image tag to the Kubernetes repo; the
+InstaladorBUDA job confirms image publication but does not wait for the cluster rollout.
+The **Namsel Kubernetes GitOps** target opens the Flux repo in the Git panel so its update
+commit can be inspected.
+This InstaladorBUDA integration is compiled but not yet verified in the running app.
 
 ---
 
@@ -88,6 +98,10 @@ Release tradutor-buda-v1.7.20 on TashiRabten/GlossarioBUDA: PUBLISHED 2026-09-27
   TradutorBUDA-1.7.20-arm64.pkg                    329.9 MB
   TradutorBUDA-1.7.20.exe                          309.4 MB
 ```
+
+For a `container-image` target, the log reports the successful image workflow and that
+Flux can advance the manifest. Confirm the cluster rollout in the Kubernetes repo or its
+deployment dashboard.
 
 | Line | Meaning |
 |---|---|
@@ -200,6 +214,7 @@ you can see the update took effect. The button is off when `build-exe.ps1` is no
   "tagPrefix": "myapp-v",                       // tag = tagPrefix + version
   "workflow": "build-myapp.yml",                // workflow file name in that repo
   "releaseBranch": "myapp",                     // target_commitish for the release (or "")
+  // "outputKind": "container-image",             // optional: publishes an OCI image, not a GitHub Release
 
   // ONE of these tells InstaladorBUDA the current version (to pre-fill +1):
   "versionFile": "VERSION",                     //   read a file…
@@ -244,6 +259,8 @@ you can see the update took effect. The button is off when `build-exe.ps1` is no
 | `repoRoot` | ✅ | Absolute path to the app's git repo on your machine. May be any repo — InstaladorBUDA can drive many. |
 | `tagPrefix` | ✅ | The release tag is `tagPrefix + version`. |
 | `workflow` | ✅ | Workflow file name (for *Trigger workflow*). |
+| `outputKind` | — | Set to `container-image` for an image workflow with no GitHub Release. InstaladorBUDA hides release-only controls and follows image publication instead. Omit for standard GitHub Release targets. |
+| `manageVisibility` | — | Set to `false` to disable the public/private controls for a repo target whose visibility this app should not change. |
 | `releaseBranch` | — | `target_commitish` if the updater filters by branch; otherwise `""`. Also used as `--target` when *Publish from run* creates the release. |
 | `releaseRepo` | — | Repo that hosts this app's **releases**. Omit for BUDA apps (defaults to `releaseRepoDefault` = `TashiRabten/GlossarioBUDA`); set it to the app's own `owner/repo` for standalone apps that publish to themselves. Used by *Publish from run* / *Un-draft*. |
 | `versionFile` + `versionRegex` | one of these¹ | Read current version from a file (capture group 1). |
@@ -276,10 +293,15 @@ contain a workflow that does the rest. Model the workflow on
    `gh release download <models-tag> --repo <release-repo> --pattern '<name>.zip'`, matching
    what InstaladorBUDA's *Upload models* produced (one `<name>.zip` per item, the folder/file
    at the zip's top level).
+
 4. **Build** the platform installers.
 5. **Publish**: create the release on the release repo if missing, targeting `releaseBranch`,
    then `gh release upload --clobber` the installers. Cross-repo publishing needs a PAT —
    reuse the `GH_PAT` secret pattern already in the other workflows.
+
+For a `container-image` target, the workflow publishes the image tag instead of creating a
+GitHub Release. If the daemon reports its version from a file, set that version from the
+validated tag or dispatch input inside the workflow before building the image.
 
 If models are too big for git (the common reason to use a `*-models-*` release), add an
 upload helper modeled on

@@ -46,17 +46,20 @@
         { "name": "segmentation_onnx",       "path": "models\\segmentation_onnx",             "default": true },
         { "name": "tibetan-upos-onnx",       "path": "models\\tibetan-upos-onnx",             "default": true },
         { "name": "sanskrit-segmenter-onnx", "path": "models\\sanskrit-segmenter-onnx",       "default": true },
+        { "name": "pechabridge-ocr-onnx",    "path": "models\\pechabridge-ocr-onnx",          "default": true },
         { "name": "wav2vec2-tibetan-onnx",   "path": "audio_models\\wav2vec2-tibetan-onnx",   "default": true },
         { "name": "tibetan-tts-onnx",        "path": "audio_models\\tibetan-tts-onnx",        "default": true },
+        { "name": "nllb-boen-onnx",          "path": "models\\nllb-boen-onnx",                "default": true },
         { "name": "cross_encoder_nllb_onnx", "path": "models_extra\\cross_encoder_nllb_onnx", "default": true },
         { "name": "photilines_onnx",         "path": "bdrc_models",                           "default": true },
+        { "name": "script_router_onnx",      "path": "models\\script_router_onnx",           "default": true },
         { "name": "dictionaries",            "path": "models\\dictionaries",                  "default": false },
         { "name": "whisper-ov-int8",         "path": "audio_models\\whisper-ov-int8",         "default": false }
       ],
       "bundles": [
-        { "id": "essential",    "name": "Essential",    "default": true },
-        { "id": "segmentation", "name": "Segmentation", "default": true },
-        { "id": "audio",        "name": "Audio",        "default": true }
+        { "id": "essential",    "name": "Essenciais",    "default": true },
+        { "id": "segmentation", "name": "Intermediário", "default": true },
+        { "id": "audio",        "name": "Áudio",         "default": true }
       ],
       "dispatchInputs": [
         { "name": "version", "value": "{version}" },
@@ -78,6 +81,35 @@
         { "name": "version", "value": "{version}" },
         { "name": "publish", "value": "{publish}" }
       ]
+    },
+    {
+      "name": "Namsel Kubernetes release",
+      "_comment": "Builds and publishes the Namsel daemon image; Flux ImageUpdateAutomation advances the Kubernetes deployment to the new semver tag.",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\TradutorBUDA",
+      "tagPrefix": "namsel-ocr-v",
+      "workflow": "publish-namsel-ocr-image.yml",
+      "releaseBranch": "",
+      "versionFromGitTag": "namsel-ocr-v*",
+      "outputKind": "container-image",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": [
+        { "name": "version", "value": "{version}" }
+      ]
+    },
+    {
+      "name": "Namsel Kubernetes GitOps",
+      "_comment": "Flux GitOps repo for the Namsel Kubernetes deployment; use this target to inspect Flux's automatic image-tag update. Git panel only.",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\TradutorBUDA\\flux-ovh",
+      "releaseRepo": "jorgejch/flux-ovh",
+      "manageVisibility": false,
+      "tagPrefix": "",
+      "workflow": "",
+      "releaseBranch": "",
+      "versionFromGitTag": "",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
     },
     {
       "name": "DadosBUDA",
@@ -188,6 +220,19 @@
       "_comment": "Tashi's BUDA suite online Portfolio.",
       "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\apps\\BUDA_APPs_Port",
       "releaseRepo": "TashiRabten/BUDA_APPs_Port",
+      "tagPrefix": "",
+      "workflow": "",
+      "releaseBranch": "",
+      "versionFromGitTag": "",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
+    },
+    {
+      "name": "rel-site-2025",
+      "_comment": "Netlify release site source repo; Git panel only, no installer workflow.",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\rel-site-2025",
+      "releaseRepo": "TashiRabten/rel-site-2025",
       "tagPrefix": "",
       "workflow": "",
       "releaseBranch": "",

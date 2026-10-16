@@ -203,6 +203,11 @@ function Build-TagCommands {
     param($app, [string]$Version, [string]$ReleaseNotes = '', [string]$Bundles = 'all')
     $repo = $app.repoRoot
     $tag  = "$($app.tagPrefix)$Version"
+    if ($app.outputKind -eq 'container-image') {
+        # Image tags are immutable release identifiers. Never move an existing image tag;
+        # use the workflow-dispatch action to retry a failed image build instead.
+        return @("git -C `"$repo`" tag $tag", "git -C `"$repo`" push origin $tag")
+    }
     # A tag push carries no workflow inputs, so a bundle subset rides in the annotated tag
     # message as a "Bundles: <ids>" line. build-segbuda.yml's manifest job reads it (and
     # prepare-release strips it from the release body); no line → every bundle.
@@ -652,7 +657,7 @@ function Show-RunArtifacts {
 # release it should have made is missing.
 function Invoke-FollowUp {
     param([string]$Kind, [string]$AppRepo, [string]$Workflow, [string]$ReleaseRepo, [string]$Tag,
-          [bool]$Publish, [datetime]$Since, [int]$LastExit = 0, [switch]$StatusLines)
+          [bool]$Publish, [datetime]$Since, [int]$LastExit = 0, [switch]$StatusLines, [switch]$ImageOnly)
     if ($LastExit -ne 0) {
         Write-Host "The last command failed (exit $LastExit) - not following the build." -ForegroundColor Red
         return $LastExit
@@ -665,6 +670,13 @@ function Invoke-FollowUp {
         $run = Watch-WorkflowRun -Repo $AppRepo -Workflow $Workflow -Event $event -Branch $branch -Since $Since -StatusLines:$StatusLines
         if (-not $run) { return 0 }
         if ($run.Conclusion -ne 'success') { $code = 1 }
+        if ($ImageOnly) {
+            if ($code -eq 0) {
+                if ($StatusLines) { Write-Host '::status::image published; Flux will watch for its new tag' }
+                Write-Host "Container image workflow succeeded for $Tag. Flux image automation can advance the Kubernetes manifest; this job does not wait for cluster rollout." -ForegroundColor Green
+            }
+            return $code
+        }
         if (-not $Publish) { Show-RunArtifacts -Repo $AppRepo -RunId $run.Id; return $code }
     }
     if ($StatusLines) { Write-Host '::status::checking the release...' }
@@ -688,6 +700,7 @@ function Build-FollowUpLines {
         ' -Workflow '    + (Quote-PS $app.workflow) +
         ' -ReleaseRepo ' + (Quote-PS (Resolve-ReleaseRepo $app)) +
         ' -Tag '         + (Quote-PS "$($app.tagPrefix)$Version")
+    if ($app.outputKind -eq 'container-image') { $call += ' -ImageOnly' }
     return @($defs) + $call + 'if (-not $__code) { $__code = $__fu }'
 }
 
@@ -733,29 +746,42 @@ function Show-ConsoleMenu {
         }
         $idx = 0; if (-not [int]::TryParse($sel, [ref]$idx) -or $idx -lt 1 -or $idx -gt $Apps.Count) { continue }
         $app = $Apps[$idx - 1]
+        $isImageOnly = $app.outputKind -eq 'container-image'
 
         $cur  = Get-CurrentVersion $app
         $next = Get-NextVersion $cur
         $ver  = Read-Host "Version (current $cur) [$next]"
         if ([string]::IsNullOrWhiteSpace($ver)) { $ver = $next }
+        if ($isImageOnly -and $ver -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Host 'Container image versions must use semantic version format x.y.z.' -ForegroundColor Yellow
+            continue
+        }
 
         Write-Host ""
         $canUpload = [bool]$app.uploadScript -or (@($app.models).Count -gt 0)
         Write-Host "  a) Upload models$(if($canUpload){''}else{'  (n/a)'})"
-        Write-Host "  b) Deploy — push tag $($app.tagPrefix)$ver"
-        Write-Host "  c) Trigger workflow (publishes a real tag/release, same as Deploy)"
-        Write-Host "  d) Publish from existing run (no rebuild)"
-        Write-Host "  u) Un-draft release $($app.tagPrefix)$ver"
+        if ($isImageOnly) {
+            Write-Host "  b) Publish container image — push tag $($app.tagPrefix)$ver"
+            Write-Host "  c) Publish container image — trigger workflow"
+        } else {
+            Write-Host "  b) Deploy — push tag $($app.tagPrefix)$ver"
+            Write-Host "  c) Trigger workflow (publishes a real tag/release, same as Deploy)"
+            Write-Host "  d) Publish from existing run (no rebuild)"
+            Write-Host "  u) Un-draft release $($app.tagPrefix)$ver"
+        }
         $repoSlug = Resolve-AppRepo $app
+        $canManageVisibility = $null -eq $app.manageVisibility -or [bool]$app.manageVisibility
         $vis = if ($HasGh) { Get-RepoVisibility $repoSlug } else { $null }
         $visLabel = if ($vis) { " (currently $vis)" } else { '' }
-        Write-Host "  v) Make repo public$visLabel  [$repoSlug]"
-        Write-Host "  p) Make repo private$visLabel  [$repoSlug]"
+        if ($canManageVisibility) {
+            Write-Host "  v) Make repo public$visLabel  [$repoSlug]"
+            Write-Host "  p) Make repo private$visLabel  [$repoSlug]"
+        }
         $act = Read-Host "Action"
 
         $notes = ''
         # Deploy (b), Trigger (c) and Publish-from-run (d) use the note as the release body.
-        if ($act -eq 'c' -or $act -eq 'b' -or $act -eq 'd') {
+        if (-not $isImageOnly -and ($act -eq 'c' -or $act -eq 'b' -or $act -eq 'd')) {
             $notes = Read-Host "Release notes (optional, single line)"
         }
         $cmds = switch ($act) {
@@ -777,32 +803,39 @@ function Show-ConsoleMenu {
                 if ($null -ne $bundleSel -and [string]::IsNullOrWhiteSpace($bundleSel)) {
                     Write-Host "No bundles selected." -ForegroundColor Yellow; @()
                 } else {
-                    Build-DispatchCommands $app $ver $true $notes (if ($bundleSel) { $bundleSel } else { 'all' })
+                    $bundleArg = 'all'
+                    if ($bundleSel) { $bundleArg = $bundleSel }
+                    Build-DispatchCommands $app $ver (-not $isImageOnly) $notes $bundleArg
                 }
             }
-            'u' { Build-UndraftCommands $app $ver }
+            'u' { if ($isImageOnly) { @() } else { Build-UndraftCommands $app $ver } }
             'v' {
-                if (-not $repoSlug) { Write-Host "Could not resolve the GitHub repo for $($app.name) (no git remote?)." -ForegroundColor Yellow; @() }
+                if (-not $canManageVisibility) { Write-Host "Visibility changes are disabled for $($app.name)." -ForegroundColor Yellow; @() }
+                elseif (-not $repoSlug) { Write-Host "Could not resolve the GitHub repo for $($app.name) (no git remote?)." -ForegroundColor Yellow; @() }
                 else { Build-VisibilityCommands $repoSlug 'public' }
             }
             'p' {
-                if (-not $repoSlug) { Write-Host "Could not resolve the GitHub repo for $($app.name) (no git remote?)." -ForegroundColor Yellow; @() }
+                if (-not $canManageVisibility) { Write-Host "Visibility changes are disabled for $($app.name)." -ForegroundColor Yellow; @() }
+                elseif (-not $repoSlug) { Write-Host "Could not resolve the GitHub repo for $($app.name) (no git remote?)." -ForegroundColor Yellow; @() }
                 else { Build-VisibilityCommands $repoSlug 'private' }
             }
             'd' {
-                $repo = Resolve-AppRepo $app
-                $runs = Get-WorkflowRuns $repo $app.workflow
-                if (-not $runs -or $runs.Count -eq 0) { Write-Host "No runs found for $($app.workflow)." -ForegroundColor Yellow; @() }
+                if ($isImageOnly) { @() }
                 else {
-                    for ($i = 0; $i -lt [Math]::Min($runs.Count, 15); $i++) {
-                        $rr = $runs[$i]
-                        $when = try { ([datetime]$rr.createdAt).ToLocalTime().ToString('MM-dd HH:mm') } catch { "$($rr.createdAt)" }
-                        Write-Host ("  $($i + 1)) $when  [$($rr.conclusion)]  $($rr.displayTitle)  ($($rr.headBranch))")
+                    $repo = Resolve-AppRepo $app
+                    $runs = Get-WorkflowRuns $repo $app.workflow
+                    if (-not $runs -or $runs.Count -eq 0) { Write-Host "No runs found for $($app.workflow)." -ForegroundColor Yellow; @() }
+                    else {
+                        for ($i = 0; $i -lt [Math]::Min($runs.Count, 15); $i++) {
+                            $rr = $runs[$i]
+                            $when = try { ([datetime]$rr.createdAt).ToLocalTime().ToString('MM-dd HH:mm') } catch { "$($rr.createdAt)" }
+                            Write-Host ("  $($i + 1)) $when  [$($rr.conclusion)]  $($rr.displayTitle)  ($($rr.headBranch))")
+                        }
+                        $rs = Read-Host "Run # to publish"; $ri = 0
+                        if ([int]::TryParse($rs, [ref]$ri) -and $ri -ge 1 -and $ri -le $runs.Count) {
+                            Build-PublishFromRunCommands $app $repo "$($runs[$ri - 1].databaseId)" $ver $notes
+                        } else { @() }
                     }
-                    $rs = Read-Host "Run # to publish"; $ri = 0
-                    if ([int]::TryParse($rs, [ref]$ri) -and $ri -ge 1 -and $ri -le $runs.Count) {
-                        Build-PublishFromRunCommands $app $repo "$($runs[$ri - 1].databaseId)" $ver $notes
-                    } else { @() }
                 }
             }
             default { @() }
@@ -822,8 +855,9 @@ function Show-ConsoleMenu {
                 # Publish from run / Un-draft: report the release.
                 $kind = switch ($act) { 'b' { 'push' } 'c' { 'dispatch' } 'd' { 'release' } 'u' { 'release' } default { $null } }
                 if ($kind -and $HasGh) {
-                    [void](Invoke-FollowUp -Kind $kind -Publish $true -Since $since -LastExit ([int]$LASTEXITCODE) `
-                        -AppRepo (Resolve-AppRepo $app) -Workflow $app.workflow -ReleaseRepo (Resolve-ReleaseRepo $app) -Tag "$($app.tagPrefix)$ver")
+                    [void](Invoke-FollowUp -Kind $kind -Publish (-not $isImageOnly) -Since $since -LastExit ([int]$LASTEXITCODE) `
+                        -AppRepo (Resolve-AppRepo $app) -Workflow $app.workflow -ReleaseRepo (Resolve-ReleaseRepo $app) `
+                        -Tag "$($app.tagPrefix)$ver" -ImageOnly:$isImageOnly)
                 }
             }
             finally { Pop-Location }
@@ -1500,7 +1534,33 @@ function New-JobTab {
         if (-not $app) { return }
         # An app with no build workflow (InstaladorBUDA itself) is here for its Git group: no release steps.
         $hasWorkflow = -not [string]::IsNullOrWhiteSpace($app.workflow)
-        foreach ($b in @($btnDeploy, $btnDispatch, $btnLoadRuns, $btnPubRun, $btnUndraft)) { $b.Enabled = $hasWorkflow }
+        $isImageOnly = $app.outputKind -eq 'container-image'
+        $hasGithubRelease = $hasWorkflow -and -not $isImageOnly
+        $btnDeploy.Enabled = $hasWorkflow
+        $btnDispatch.Enabled = $hasWorkflow
+        foreach ($b in @($btnLoadRuns, $btnPubRun, $btnUndraft, $btnRelPage)) { $b.Enabled = $hasGithubRelease }
+        $btnActions.Enabled = $hasWorkflow
+        $chkPublish.Enabled = $hasGithubRelease
+        $chkPublish.Checked = $hasGithubRelease
+        $chkPublish.Text = if ($isImageOnly) { 'Container image publishes to GHCR; Flux follows the new semantic version' }
+                           elseif ($hasWorkflow) { 'Publish to website (attach installers to the release)' }
+                           else { 'No release workflow is configured for this target' }
+        $grp.Text = if ($isImageOnly) { 'Build and publish image' } else { 'Steps' }
+        $btnDeploy.Text = if ($isImageOnly) { '2. Publish image' } else { '2. Deploy (push tag)' }
+        $btnDispatch.Text = if ($isImageOnly) { 'or: Publish image' } else { 'or: Trigger workflow' }
+        $grpNotes.Enabled = $hasGithubRelease
+        $grpNotes.Text = if ($isImageOnly) { 'Release notes (not used for container image builds)' }
+                         elseif ($hasWorkflow) { 'Release notes (Deploy / Trigger / Publish use this as the release message)' }
+                         else { 'Release notes (no release workflow configured)' }
+        $grpPub.Enabled = $hasGithubRelease
+        $txtNotes.Enabled = $hasGithubRelease
+        if ($isImageOnly) {
+            $tips.SetToolTip($btnDeploy, 'Pushes the version tag; GitHub builds the Namsel daemon image and Flux watches for the new semver tag.')
+            $tips.SetToolTip($btnDispatch, 'Builds and publishes the Namsel daemon image for the entered version; Flux watches for the new semver tag.')
+        } else {
+            $tips.SetToolTip($btnDeploy, 'Pushes a real git tag locally, which always rebuilds every bundle.')
+            $tips.SetToolTip($btnDispatch, "With 'Publish to website' checked, this DOES create a real tag + release (same gh release create/finalize path as Deploy) — it just doesn't push a local git tag, so InstaladorBUDA's 'current version' won't see it until you 'git fetch --tags'.")
+        }
         & $refreshGit
         $cur = Get-CurrentVersion $app
         $lblCur.Text = "current: $cur   ->   tag: $($app.tagPrefix)"
@@ -1516,7 +1576,9 @@ function New-JobTab {
             $cmbWf.Items.Clear(); $cmbWf.Text = $app.workflow
             $cmbRun.Items.Clear(); $tabState.LoadedRuns = @()
             $relRepo = Resolve-ReleaseRepo $app
-            $grpPub.Text = "Publish from existing run (no rebuild)  ->  $relRepo"
+            if ($hasGithubRelease) { $grpPub.Text = "Publish from existing run (no rebuild)  ->  $relRepo" }
+            elseif ($isImageOnly) { $grpPub.Text = 'GitHub release controls (not used for container image builds)' }
+            else { $grpPub.Text = 'GitHub release controls (no release workflow configured)' }
         }
         # Repo visibility follows the selected app's OWN repo (where Actions minutes
         # are spent), not the release repo.
@@ -1525,8 +1587,10 @@ function New-JobTab {
             $grpVis.Text = "Repo visibility  ->  $(if ($repoSlug) { $repoSlug } else { '(no git remote found)' })"
             $lblVis.Text = 'checking...'
             $lblVis.ForeColor = [System.Drawing.Color]::Gray
-            $btnMakePublic.Enabled = [bool]$repoSlug
-            $btnMakePrivate.Enabled = [bool]$repoSlug
+            $canManageVisibility = [bool]$repoSlug
+            if ($null -ne $app.manageVisibility) { $canManageVisibility = $canManageVisibility -and [bool]$app.manageVisibility }
+            $btnMakePublic.Enabled = $canManageVisibility
+            $btnMakePrivate.Enabled = $canManageVisibility
         }
         if (-not $tabState.IsRunning) { & $setTabStatus $null }
     }.GetNewClosure()
@@ -1707,8 +1771,12 @@ function New-JobTab {
     }.GetNewClosure())
     $btnDeploy.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
+        $isImageOnly = $app.outputKind -eq 'container-image'
         $v = $txtVer.Text.Trim()
         if (-not $v) { & $appendLog "Enter a version first."; return }
+        if ($isImageOnly -and $v -notmatch '^\d+\.\d+\.\d+$') {
+            & $appendLog 'Container image versions must use semantic version format x.y.z.'; return
+        }
         # Apps with tiered bundles (SegBUDA) pick which ones this release rebuilds. The
         # selection rides in the tag message (Build-TagCommands); ticking all of them is a
         # plain tag push, exactly as before.
@@ -1719,16 +1787,24 @@ function New-JobTab {
             if ([string]::IsNullOrWhiteSpace($picked)) { & $appendLog "No bundles selected — nothing to deploy."; return }
             $bundles = Resolve-BundleSelection $app $picked
         }
-        # Release notes ride along as the annotated tag message → the workflow uses them
-        # as the release body. Empty notes fall back to a lightweight tag + default message.
-        $label = if ($bundles -eq 'all') { "Deploy $($app.name) v$v (push tag)" } else { "Deploy $($app.name) v$v (push tag, bundles: $bundles)" }
-        & $run (Build-TagCommands $app $v $txtNotes.Text $bundles) $label $false $app.repoRoot (Build-FollowUpLines $app 'push' $v $true)
+        # GitHub release notes ride along as the annotated tag message. Container-image
+        # workflows do not create GitHub releases, so their tags stay lightweight.
+        $notes = if ($isImageOnly) { '' } else { $txtNotes.Text }
+        $label = if ($isImageOnly) { "Publish $($app.name) image v$v (push tag)" }
+                 elseif ($bundles -eq 'all') { "Deploy $($app.name) v$v (push tag)" }
+                 else { "Deploy $($app.name) v$v (push tag, bundles: $bundles)" }
+        & $run (Build-TagCommands $app $v $notes $bundles) $label $false $app.repoRoot (Build-FollowUpLines $app 'push' $v $true)
     }.GetNewClosure())
     $btnDispatch.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
+        $isImageOnly = $app.outputKind -eq 'container-image'
         $v = $txtVer.Text.Trim()
         if (-not $v) { & $appendLog "Enter a version first."; return }
-        $notes = $txtNotes.Text
+        if ($isImageOnly -and $v -notmatch '^\d+\.\d+\.\d+$') {
+            & $appendLog 'Container image versions must use semantic version format x.y.z.'; return
+        }
+        $notes = if ($isImageOnly) { '' } else { $txtNotes.Text }
+        $publish = $chkPublish.Checked -and -not $isImageOnly
         $usesNotes = @($app.dispatchInputs | Where-Object { "$($_.value)".Contains('{notes}') }).Count -gt 0
         if ($usesNotes -and [string]::IsNullOrWhiteSpace($notes)) {
             & $appendLog "Tip: Release notes are empty — the release will use a default message."
@@ -1740,7 +1816,8 @@ function New-JobTab {
             if ([string]::IsNullOrWhiteSpace($picked)) { & $appendLog "No bundles selected — nothing to build."; return }
             $bundles = $picked
         }
-        & $run (Build-DispatchCommands $app $v $chkPublish.Checked $notes $bundles) "Trigger $($app.name) workflow v$v ($bundles)" $true $app.repoRoot (Build-FollowUpLines $app 'dispatch' $v $chkPublish.Checked)
+        $label = if ($isImageOnly) { "Publish $($app.name) image v$v" } else { "Trigger $($app.name) workflow v$v ($bundles)" }
+        & $run (Build-DispatchCommands $app $v $publish $notes $bundles) $label $true $app.repoRoot (Build-FollowUpLines $app 'dispatch' $v $publish)
     }.GetNewClosure())
     $btnCopy.Add_Click({
         if ($tabState.LastCommands) {
@@ -1754,6 +1831,7 @@ function New-JobTab {
     $btnMakePublic.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
+        if ($null -ne $app.manageVisibility -and -not [bool]$app.manageVisibility) { & $appendLog "Visibility changes are disabled for $($app.name)."; return }
         $repoSlug = Resolve-AppRepo $app
         if (-not $repoSlug) { & $appendLog "Could not resolve the GitHub repo for $($app.name) (no git remote?)."; return }
         if (-not $chkDry.Checked) {
@@ -1769,6 +1847,7 @@ function New-JobTab {
     $btnMakePrivate.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
+        if ($null -ne $app.manageVisibility -and -not [bool]$app.manageVisibility) { & $appendLog "Visibility changes are disabled for $($app.name)."; return }
         $repoSlug = Resolve-AppRepo $app
         if (-not $repoSlug) { & $appendLog "Could not resolve the GitHub repo for $($app.name) (no git remote?)."; return }
         & $run (Build-VisibilityCommands $repoSlug 'private') "Make $($app.name) repo private" $true $app.repoRoot $null $refreshVisibility
