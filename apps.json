@@ -1,5 +1,5 @@
 {
-  "_comment": "App registry for InstaladorBUDA. ADD A NEW APP = add an object to \"apps\" below — no code changes. See README.md for the field reference and the full deployment strategy. Paths in repoRoot/versionFile/uploadScript/models[].items[].path are resolved per app; repoRoot may live anywhere on disk so InstaladorBUDA can drive many separate app repos.",
+  "_comment": "App registry for InstaladorBUDA. Use the bootstrap panel's Add app button for Git-only projects, or add an object to apps below for release workflows. See README.md for the field reference and deployment strategy. Paths in repoRoot/versionFile/uploadScript/models[].items[].path are resolved per app; repoRoot may live anywhere on disk.",
   "releaseRepoDefault": "TashiRabten/GlossarioBUDA",
   "actionsUrl": "https://github.com/TashiRabten/TradutorBUDA/actions",
   "apps": [
@@ -235,6 +235,21 @@
       "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPS\\rel-site-2025",
       "releaseRepo": "TashiRabten/rel-site-2025",
       "tagPrefix": "",
+      "workflow": "",
+      "releaseBranch": "",
+      "versionFromGitTag": "",
+      "uploadScript": null,
+      "models": [],
+      "dispatchInputs": []
+    }
+,
+    {
+      "name": "ScanBUDA",
+      "_comment": "OCR scanner repository; Git controls only until a release workflow is configured.",
+      "repoRoot": "C:\\Users\\tashi.TASHI-LENOVO\\APPs\\ScanerBUDA",
+      "releaseRepo": "TashiRabten/ScanBUDA",
+      "manageVisibility": false,
+      "tagPrefix": "scanbuda-v",
       "workflow": "",
       "releaseBranch": "",
       "versionFromGitTag": "",

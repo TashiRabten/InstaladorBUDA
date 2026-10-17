@@ -12,7 +12,9 @@ Each **tab** is an independent job (its own app, version, notes and log); the **
 another, so several releases can run side by side.
 
 It is **fully config-driven**. The app list lives in [`apps.json`](apps.json) next to the
-program. **Adding a new app is a JSON edit — no code changes.**
+program. Use **Add app** in the GitHub bootstrap group to register a Git-only app and then
+continue with the existing preflight / prepare / publish flow. Apps with release workflows
+can still be added by editing `apps.json` directly.
 
 ---
 
@@ -34,8 +36,11 @@ When the script changes, rebuild/restart the executable before using new CLI com
 an already-open executable keeps its original embedded script. The cockpit's **Update**
 button performs that rebuild and warns if running jobs would be stopped.
 
-The source keeps first-push Git bootstrap logic in `modules/GitBootstrap.ps1`. The build
-bundles it into the executable, so the distributed `.exe` still needs only `apps.json`.
+The source is split across `modules/`: `AppRegistry.psm1` owns the app registry,
+`GitBootstrap.ps1` owns first-push setup, and separate files hold release operations,
+console selection, GUI layout, CLI cockpit controls, and the WinForms tabs. The build
+bundles these modules into the executable, so the distributed `.exe` still needs only
+`apps.json`.
 
 ### Control the visible cockpit from the CLI
 
@@ -73,11 +78,31 @@ its final status/log tail.
 `help` returns the parameter schemas and examples. `release-plan` is a read-only preflight:
 it reports the published version, suggested next version, selected tag, branch and HEAD,
 working-tree state, and any existing-tag blockers. You can pass `target`, `tab`, and an
-optional `version`; with no target it uses the selected tab's target:
+optional `version`; with no target/version it uses the selected tab's target and version:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"release-plan","target":"TradutorBUDA"}'
 ```
+
+### GUI and CLI capability parity
+
+Every operational capability must be available in both the GUI and CLI. GUI buttons and
+their CLI actions use the same handlers, command builders, validation, confirmations and
+job log. When adding an operation, add its control and CLI route together, then update
+`help` and this README.
+
+The command endpoint also has control commands whose GUI equivalent is direct: `start` /
+`close` open or close the window, `new-tab` / `select-tab` use the tab strip, `configure`
+sets the visible fields, `status` reads the tabs and logs, `list` reads the target and task
+choices, and `help` is documented here and in the CLI response. These commands do not
+represent extra deployment operations.
+
+The GUI now includes **Release plan** and **Retag existing release** beside Deploy. It also
+includes a **GitHub repository bootstrap** group with the same three phases as the CLI:
+`Preflight`, `Prepare and stage`, and `Commit and push`. Both paths write to the selected
+tab's log. `Prepare and stage` sets up `main` and `origin`, scans and stages the project;
+review the staged paths in the log before `Commit and push`. The publish phase checks the
+prepared tree again and stops if files changed.
 
 TradutorBUDA's suggested version comes from the newest published release tag, with local
 tags as a fallback when no release is available. Deploy checks the local tag, remote tag,
@@ -128,9 +153,33 @@ $publish = $base + @{ command = 'bootstrap-publish'; commitMessage = 'Initial pr
 & .\InstaladorBUDA.exe -Cli ($publish | ConvertTo-Json -Compress)
 ```
 
+Register a Git-only target from the current tab, then continue using those same bootstrap
+fields and controls:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"add-app","name":"MyApp","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"bootstrap-plan","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}'
+```
+
+The GUI's **Add app** button uses the same validation and registration handler. It appends
+a Git-only entry to `apps.json`, selects it in all open tabs, and leaves the repo creation
+and Git bootstrap phases to their existing controls. When a build workflow is ready, edit
+that entry in `apps.json` with the release fields below.
+
+The same sequence is available in the GUI's **GitHub repository bootstrap** group. Enter
+the project folder, GitHub `owner/name`, an initial commit message, and optionally a
+Gitleaks path. Use **Browse...** to select an existing local project folder; when **App
+name** is blank, the selected folder name is suggested. Leave the scanner path blank to use the automatic lookup. Run **Preflight**,
+then **Prepare and stage** and review every staged path in the log. Use **Commit and push**
+only after that review; the cockpit asks for confirmation before each local or remote
+mutation.
+
 Bootstrap requires `git`, authenticated `gh`, a configured Git author name and email, an
 empty GitHub remote, and Gitleaks. Gitleaks is found on `PATH` or in a sibling
 `gitleaks_*_windows_*` folder; pass `gitleaksPath` to select another executable.
+The bootstrap fields can be saved on a tab with `configure` (`bootstrapRoot`, `githubRepo`,
+`bootstrapMessage`, and `gitleaksPath`); later bootstrap commands use those values when
+the corresponding request fields are omitted.
 
 **Prerequisites:** [`git`](https://git-scm.com/) and the
 [GitHub CLI `gh`](https://cli.github.com/) on `PATH`, with `gh auth login` done once.
@@ -311,7 +360,16 @@ you can see the update took effect. The button is off when `build-exe.ps1` is no
 
 ## 3. Adding a new app
 
-### 3a. Add a block to `apps.json`
+### 3a. Add a Git-only app in the cockpit or configure a release target
+
+For a new project that only needs Git controls and first-push bootstrap, fill **App name**,
+**Project folder**, and **GitHub repo** in the bootstrap group and click **Add app**. The new
+target is stored in `apps.json` and selected in each open tab. You can then click
+**Preflight**, inspect the plan, prepare and review the staged files, and commit and push
+through the existing bootstrap flow. The `add-app` CLI command accepts the same three values.
+
+To configure an app that already has a build/release workflow, add or edit a full entry in
+`apps.json`:
 
 ```jsonc
 {
@@ -363,8 +421,8 @@ you can see the update took effect. The button is off when `build-exe.ps1` is no
 |---|---|---|
 | `name` | ✅ | Shown in the dropdown. |
 | `repoRoot` | ✅ | Absolute path to the app's git repo on your machine. May be any repo — InstaladorBUDA can drive many. |
-| `tagPrefix` | ✅ | The release tag is `tagPrefix + version`. |
-| `workflow` | ✅ | Workflow file name (for *Trigger workflow*). |
+| `tagPrefix` | For release targets | The release tag is `tagPrefix + version`. A Git-only target leaves this empty. |
+| `workflow` | For release targets | Workflow file name (for *Trigger workflow*). A Git-only target leaves this empty. |
 | `outputKind` | — | Set to `container-image` for an image workflow with no GitHub Release. InstaladorBUDA hides release-only controls and follows image publication instead. Omit for standard GitHub Release targets. |
 | `manageVisibility` | — | Set to `false` to disable the public/private controls for a repo target whose visibility this app should not change. |
 | `releaseBranch` | — | `target_commitish` if the updater filters by branch; otherwise `""`. Also used as `--target` when *Publish from run* creates the release. |
@@ -455,8 +513,8 @@ window or print under *Dry run*.
 
 ## 4. Its own repo
 
-InstaladorBUDA is self-contained (`InstaladorBUDA.ps1`, `apps.json`, `build-exe.ps1`,
-`README.md`). To split it out:
+InstaladorBUDA is self-contained (`InstaladorBUDA.ps1`, `modules/`, `apps.json`,
+`build-exe.ps1`, `README.md`). To split it out:
 
 ```powershell
 # from a copy of this folder
@@ -477,7 +535,14 @@ update each `repoRoot` if your checkout paths differ.
 
 | File | Purpose |
 |---|---|
-| `InstaladorBUDA.ps1` | The app (GUI + console fallback), config-driven. |
-| `apps.json` | The app registry. **Edit this to add apps.** |
+| `InstaladorBUDA.ps1` | Small entrypoint: loads modules and chooses CLI, console, or GUI startup. |
+| `modules/AppRegistry.psm1` | App registry class and safe `apps.json` registration. |
+| `modules/GitBootstrap.ps1` | Empty-remote preflight, prepare, and publish logic. |
+| `modules/ReleaseOperations.ps1` | Release, Git, workflow, and follow-up commands. |
+| `modules/AppSelection.ps1` | Console menu and app/model/bundle selection. |
+| `modules/GuiLayout.ps1` | Shared GUI metrics and layout helpers. |
+| `modules/Cockpit.ps1` | CLI requests and named-pipe cockpit commands. |
+| `modules/Gui.ps1` | Main window and per-tab WinForms controls/handlers. |
+| `apps.json` | The app registry. Use **Add app** for Git-only targets or edit for release fields. |
 | `build-exe.ps1` | Compiles `InstaladorBUDA.exe` via ps2exe. |
 | `README.md` | This file. |

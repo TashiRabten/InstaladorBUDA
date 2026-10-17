@@ -25,21 +25,36 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src  = Join-Path $here 'InstaladorBUDA.ps1'
-$bootstrapModule = Join-Path $here 'modules\GitBootstrap.ps1'
+$moduleFiles = [ordered]@{
+    '#__APP_REGISTRY_CLASS__' = 'modules\AppRegistry.psm1'
+    '#__GIT_BOOTSTRAP_MODULE__' = 'modules\GitBootstrap.ps1'
+    '#__RELEASE_OPERATIONS_MODULE__' = 'modules\ReleaseOperations.ps1'
+    '#__APP_SELECTION_MODULE__' = 'modules\AppSelection.ps1'
+    '#__GUI_LAYOUT_MODULE__' = 'modules\GuiLayout.ps1'
+    '#__COCKPIT_MODULE__' = 'modules\Cockpit.ps1'
+    '#__GUI_MODULE__' = 'modules\Gui.ps1'
+}
 $out  = Join-Path $here 'InstaladorBUDA.exe'
 
 if (-not (Test-Path $src)) { throw "InstaladorBUDA.ps1 not found next to this script ($src)." }
-if (-not (Test-Path $bootstrapModule)) { throw "Git bootstrap module not found: $bootstrapModule" }
+foreach ($relativePath in $moduleFiles.Values) {
+    $modulePath = Join-Path $here $relativePath
+    if (-not (Test-Path $modulePath -PathType Leaf)) { throw "Source module not found: $modulePath" }
+}
 
 # The source stays split for editing. Compile one temporary script so the shipped EXE
 # still needs only apps.json beside it.
 $sourceText = [IO.File]::ReadAllText($src)
-$marker = '#__GIT_BOOTSTRAP_MODULE__'
-if ([regex]::Matches($sourceText, [regex]::Escape($marker)).Count -ne 1) {
-    throw "Expected exactly one $marker marker in InstaladorBUDA.ps1."
+$bundledSource = $sourceText.Replace('using module .\modules\AppRegistry.psm1', '# AppRegistry is embedded below for the standalone executable.')
+foreach ($entry in $moduleFiles.GetEnumerator()) {
+    $marker = [string]$entry.Key
+    if ([regex]::Matches($bundledSource, [regex]::Escape($marker)).Count -ne 1) {
+        throw "Expected exactly one $marker marker in InstaladorBUDA.ps1."
+    }
+    $modulePath = Join-Path $here ([string]$entry.Value)
+    $moduleText = [IO.File]::ReadAllText($modulePath)
+    $bundledSource = $bundledSource.Replace($marker, $moduleText)
 }
-$moduleText = [IO.File]::ReadAllText($bootstrapModule)
-$bundledSource = $sourceText.Replace($marker, $moduleText)
 $bundledInput = Join-Path $env:TEMP ("InstaladorBUDA-bundle-" + [guid]::NewGuid().ToString('N') + '.ps1')
 
 # Default icon: the app icon in the resources folder, if present.
