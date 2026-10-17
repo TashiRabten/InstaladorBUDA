@@ -42,9 +42,9 @@ $moduleText = [IO.File]::ReadAllText($bootstrapModule)
 $bundledSource = $sourceText.Replace($marker, $moduleText)
 $bundledInput = Join-Path $env:TEMP ("InstaladorBUDA-bundle-" + [guid]::NewGuid().ToString('N') + '.ps1')
 
-# Default icon: the shared pramana.ico next to this script, if present.
+# Default icon: the app icon in the resources folder, if present.
 if (-not $Icon) {
-    $guess = Join-Path $here 'pramana.ico'
+    $guess = Join-Path $here 'resources\pramana.ico'
     if (Test-Path $guess) { $Icon = (Resolve-Path $guess).Path }
 }
 
