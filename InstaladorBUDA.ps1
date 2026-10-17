@@ -19,6 +19,10 @@
 .PARAMETER ConfigPath
     Path to apps.json. Defaults to the file next to this script / the .exe.
 
+.PARAMETER Cli
+    Send one JSON command to the visible cockpit, for example:
+    -Cli '{"command":"status"}' or -Cli '{"command":"action","action":"dispatch","tab":1}'.
+
 .EXAMPLE
     .\InstaladorBUDA.ps1
 .EXAMPLE
@@ -27,7 +31,8 @@
 [CmdletBinding()]
 param(
     [switch]$Console,
-    [string]$ConfigPath
+    [string]$ConfigPath,
+    [string]$Cli
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +57,77 @@ $Apps   = @($Config.apps)
 $Tasks  = @($Config.tasks)
 $ReleaseRepo = if ($Config.releaseRepoDefault) { $Config.releaseRepoDefault } else { 'TashiRabten/GlossarioBUDA' }
 $ActionsUrl  = if ($Config.actionsUrl) { $Config.actionsUrl } else { 'https://github.com/TashiRabten/TradutorBUDA/actions' }
+
+$script:ControlPipeName = 'InstaladorBUDA.Control.v1'
+
+function Send-CockpitPipeRequest {
+    param([string]$Json, [int]$ConnectTimeoutMs = 2500)
+    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $script:ControlPipeName,
+        [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::None)
+    try {
+        $pipe.Connect($ConnectTimeoutMs)
+        $reader = [System.IO.StreamReader]::new($pipe, [System.Text.Encoding]::UTF8, $false, 4096, $true)
+        $writer = [System.IO.StreamWriter]::new($pipe, [System.Text.Encoding]::UTF8, 4096, $true)
+        $writer.AutoFlush = $true
+        $writer.WriteLine($Json)
+        $line = $reader.ReadLine()
+        if (-not $line) { throw 'The cockpit closed the command connection without a response.' }
+        return ($line | ConvertFrom-Json)
+    } finally {
+        $pipe.Dispose()
+    }
+}
+
+function Invoke-CockpitCli {
+    param([string]$Json)
+    try { $request = $Json | ConvertFrom-Json -ErrorAction Stop }
+    catch {
+        $request = [pscustomobject]@{ command = $Json.Trim() }
+    }
+    if (-not $request.command) {
+        throw 'CLI input must be JSON with a command property. Run with -Cli ''{"command":"help"}''.'
+    }
+
+    $requestJson = $request | ConvertTo-Json -Compress -Depth 12
+    try { $response = Send-CockpitPipeRequest $requestJson }
+    catch {
+        if ($request.command -eq 'start') {
+            $guiExe = Join-Path $AppDir 'InstaladorBUDA.exe'
+            if (Test-Path $guiExe) {
+                Start-Process -FilePath $guiExe -WorkingDirectory $AppDir | Out-Null
+            } elseif ($PSCommandPath) {
+                $engine = if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' }
+                          else { Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe' }
+                Start-Process -FilePath $engine -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") `
+                    -WorkingDirectory $AppDir -WindowStyle Hidden | Out-Null
+            } else { throw 'Cannot locate InstaladorBUDA.exe or its source script to start the cockpit.' }
+
+            $deadline = [datetime]::UtcNow.AddSeconds(20)
+            do {
+                Start-Sleep -Milliseconds 300
+                try { $response = Send-CockpitPipeRequest $requestJson 500; break } catch { }
+            } while ([datetime]::UtcNow -lt $deadline)
+            if (-not $response) { throw 'The cockpit did not start its command endpoint within 20 seconds.' }
+        } else {
+            throw "The visible cockpit is not running. Start it with -Cli '{`"command`":`"start`"}' or open InstaladorBUDA.exe. Details: $($_.Exception.Message)"
+        }
+    }
+
+    if ($request.waitMs -gt 0 -and $request.command -eq 'action' -and $request.action -ne 'update' -and $response.ok -and $response.data.tabId) {
+        $tabId = $response.data.tabId
+        $deadline = [datetime]::UtcNow.AddMilliseconds([Math]::Min([int]$request.waitMs, 3600000))
+        do {
+            Start-Sleep -Milliseconds 1000
+            $statusJson = [pscustomobject]@{ command = 'status'; tab = $tabId } | ConvertTo-Json -Compress
+            $response = Send-CockpitPipeRequest $statusJson
+            $tabStatus = $response.data.tabs | Where-Object { $_.id -eq $tabId } | Select-Object -First 1
+        } while ($tabStatus -and $tabStatus.running -and [datetime]::UtcNow -lt $deadline)
+        if ($tabStatus -and $tabStatus.running) { $response | Add-Member -NotePropertyName timedOut -NotePropertyValue $true -Force }
+    }
+
+    [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 12))
+    if (-not $response.ok) { exit 1 }
+}
 
 function Get-App { param([string]$Name) $Apps | Where-Object { $_.name -eq $Name } | Select-Object -First 1 }
 
@@ -1057,6 +1133,291 @@ function Set-ButtonRow {
     return $X
 }
 
+function Convert-CliList {
+    param($Value)
+    if ($null -eq $Value) { return ,@() }
+    if ($Value -is [string]) { return ,@($Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    return ,@($Value | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
+}
+
+function Test-CliProperty {
+    param($Object, [string]$Name)
+    return ($Object -and ($Object.PSObject.Properties.Name -contains $Name))
+}
+
+function Resolve-CliTab {
+    param($GuiState, $Request)
+    $tabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.Id })
+    if (Test-CliProperty $Request 'tab') {
+        $value = "$($Request.tab)"
+        $match = $tabs | Where-Object { $_.Tag.Id -eq $value -or $_.Text -eq $value } | Select-Object -First 1
+        if (-not $match) { throw "No cockpit tab matches '$value'. Use status to list tab IDs." }
+        return $match
+    }
+    if ($GuiState.Tabs.SelectedTab -and $GuiState.Tabs.SelectedTab.Tag) { return $GuiState.Tabs.SelectedTab }
+    if ($tabs.Count -gt 0) { return $tabs[0] }
+    throw 'The cockpit has no job tab.'
+}
+
+function Get-CockpitStatus {
+    param($GuiState, $Request)
+    $all = @()
+    foreach ($page in @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.Controls })) {
+        $state = $page.Tag; $c = $state.Controls
+        $tail = @($c.Log.Text -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 20)
+        $all += [pscustomobject]@{
+            id = $state.Id; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text
+            publish = [bool]$c.Publish.Checked; dryRun = [bool]$c.DryRun.Checked
+            running = [bool]$state.IsRunning; title = $page.Text
+            workflow = $c.Workflow.Text; task = "$($c.Task.SelectedItem)"
+            lastCommands = @($state.LastCommands); logTail = $tail
+        }
+    }
+    if (Test-CliProperty $Request 'tab') {
+        $filter = "$($Request.tab)"
+        if ($filter -match '^\d+$') { $all = @($all | Where-Object { $_.id -eq [int]$filter }) }
+        else { $all = @($all | Where-Object { $_.target -eq $filter }) }
+    }
+    return [pscustomobject]@{ ok = $true; command = 'status'; data = @{ pipe = $script:ControlPipeName; tabs = $all } }
+}
+
+function Resolve-CliBundles {
+    param($App, $Value)
+    if (-not $App.bundles -or @($App.bundles).Count -eq 0) { return 'all' }
+    $tokens = @(Convert-CliList $Value)
+    if ($tokens.Count -eq 0) { $tokens = @($App.bundles | Where-Object { $_.default } | ForEach-Object { $_.id }) }
+    if ($tokens.Count -eq 1 -and $tokens[0] -eq 'all') { return 'all' }
+    $ids = @()
+    foreach ($token in $tokens) {
+        $bundle = $App.bundles | Where-Object { $_.id -eq $token -or $_.name -eq $token } | Select-Object -First 1
+        if (-not $bundle) { throw "Unknown bundle '$token' for $($App.name). Use list to see bundle IDs and names." }
+        $ids += $bundle.id
+    }
+    return (Resolve-BundleSelection $App ($ids -join ','))
+}
+
+function Resolve-CliModels {
+    param($App, $Value)
+    $definitions = @($App.uploadModels)
+    if ($definitions.Count -eq 0) { throw "$($App.name) has no model-upload list." }
+    $tokens = @(Convert-CliList $Value)
+    if ($tokens.Count -eq 1 -and $tokens[0] -eq 'all') { $tokens = @($definitions | ForEach-Object { $_.name }) }
+    if ($tokens.Count -eq 0) {
+        $tokens = @($definitions | Where-Object { $_.default -and (Test-Path (Join-Path $App.repoRoot $_.path)) } | ForEach-Object { $_.name })
+    }
+    foreach ($token in $tokens) {
+        if (-not ($definitions | Where-Object { $_.name -eq $token })) { throw "Unknown model '$token' for $($App.name). Use list to see model IDs." }
+    }
+    return ,$tokens
+}
+
+function Invoke-CockpitRequest {
+    param($GuiState, $Request)
+    $command = [string]$Request.command
+    if ($command -eq 'help') {
+        return [pscustomobject]@{ ok = $true; command = 'help'; data = @{ commands = @('start','close','list','status','new-tab','select-tab','configure','action'); actions = @('upload','deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-commit','git-push','update'); pipe = $script:ControlPipeName; example = '{"command":"action","tab":1,"action":"dispatch","target":"SegBUDA","version":"1.0.18","bundles":["essential"],"notes":"Release notes","confirm":true,"waitMs":120000}' } }
+    }
+    if ($command -eq 'list') {
+        $targets = @($Apps | ForEach-Object { [pscustomobject]@{ name = $_.name; repoRoot = $_.repoRoot; workflow = $_.workflow; tagPrefix = $_.tagPrefix; bundles = @($_.bundles); models = @($_.uploadModels | ForEach-Object { $_.name }) } })
+        return [pscustomobject]@{ ok = $true; command = 'list'; data = @{ targets = $targets; tasks = @($Tasks | ForEach-Object { [pscustomobject]@{ name = $_.name; runOn = $_.runOn } }) } }
+    }
+    if ($command -eq 'status') { return (Get-CockpitStatus $GuiState $Request) }
+    if ($command -eq 'start') { return (Get-CockpitStatus $GuiState $Request) }
+    if ($command -eq 'close') {
+        if (-not $Request.confirm) { throw 'close requires confirm:true.' }
+        $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
+        if ($runningTabs.Count -gt 0 -and -not $Request.stopRunning) {
+            $names = ($runningTabs | ForEach-Object { $_.Text }) -join ', '
+            throw "Closing the cockpit will stop running jobs ($names). Pass stopRunning:true to confirm."
+        }
+        $closeTimer = New-Object System.Windows.Forms.Timer
+        $closeTimer.Interval = 750
+        $closeTimer.Add_Tick({
+            $closeTimer.Stop()
+            $GuiState.CloseConfirmed = $true
+            try { $GuiState.Form.Close() } finally { $closeTimer.Dispose() }
+        }.GetNewClosure())
+        $closeTimer.Start()
+        return [pscustomobject]@{ ok = $true; command = 'close'; data = @{ scheduled = $true; stoppedJobs = $runningTabs.Count } }
+    }
+    if ($command -eq 'new-tab') {
+        $page = & $GuiState.NewJobTab
+        return [pscustomobject]@{ ok = $true; command = $command; data = @{ tabId = $page.Tag.Id; target = "$($page.Tag.Controls.Target.SelectedItem)" } }
+    }
+    if ($command -eq 'select-tab') {
+        $page = Resolve-CliTab $GuiState $Request
+        $GuiState.Tabs.SelectedTab = $page
+        return [pscustomobject]@{ ok = $true; command = $command; data = @{ tabId = $page.Tag.Id; target = "$($page.Tag.Controls.Target.SelectedItem)" } }
+    }
+
+    $page = Resolve-CliTab $GuiState $Request
+    $state = $page.Tag; $c = $state.Controls
+    $GuiState.Tabs.SelectedTab = $page
+
+    if ($command -eq 'configure' -or $command -eq 'action') {
+        if (Test-CliProperty $Request 'target') {
+            $app = Get-App ([string]$Request.target)
+            if (-not $app -or -not ($c.Target.Items.Contains($app.name))) { throw "Unknown target '$($Request.target)'." }
+            $c.Target.SelectedItem = $app.name
+        }
+        if (Test-CliProperty $Request 'version') { $c.Version.Text = [string]$Request.version }
+        if (Test-CliProperty $Request 'publish') { $c.Publish.Checked = [bool]$Request.publish }
+        if (Test-CliProperty $Request 'dryRun') { $c.DryRun.Checked = [bool]$Request.dryRun }
+        if (Test-CliProperty $Request 'notes') { $c.Notes.Text = [string]$Request.notes }
+        if (Test-CliProperty $Request 'workflow') { $c.Workflow.Text = [string]$Request.workflow }
+        if (Test-CliProperty $Request 'gitPaths') { $c.GitAdd.Text = [string]$Request.gitPaths }
+        if (Test-CliProperty $Request 'commitMessage') { $c.GitMessage.Text = [string]$Request.commitMessage }
+        if (Test-CliProperty $Request 'taskName') {
+            $idx = -1
+            for ($i = 0; $i -lt $c.Task.Items.Count; $i++) { if ($c.Task.Items[$i] -eq $Request.taskName) { $idx = $i; break } }
+            if ($idx -lt 0) { throw "Unknown task '$($Request.taskName)'." }
+            $c.Task.SelectedIndex = $idx
+        }
+        & $state.AppendLog ("CLI configured target=$($c.Target.SelectedItem), version=$($c.Version.Text).")
+        if ($command -eq 'configure') {
+            return [pscustomobject]@{ ok = $true; command = $command; data = @{ tabId = $state.Id; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text } }
+        }
+    }
+
+    if ($command -ne 'action') { throw "Unknown command '$command'. Use help for the command list." }
+    $actionName = ([string]$Request.action).ToLowerInvariant()
+    if ($state.IsRunning -and $actionName -ne 'update') { throw "Tab $($state.Id) already has a job running. Use another tab or wait for it to finish." }
+    if ($actionName -eq 'update') {
+        if (-not $Request.confirm) { throw 'update requires confirm:true.' }
+        $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
+        if ($runningTabs.Count -gt 0 -and -not $Request.stopRunning) {
+            $names = ($runningTabs | ForEach-Object { $_.Text }) -join ', '
+            throw "Updating will stop running jobs ($names). Pass stopRunning:true to confirm."
+        }
+    }
+    $app = Get-App ([string]$c.Target.SelectedItem)
+    $confirmationActions = @('upload','deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-commit','git-push','task')
+    if ($actionName -in $confirmationActions -and -not $c.DryRun.Checked -and -not $Request.confirm) {
+        throw "$actionName requires confirm:true (or set dryRun:true to preview only)."
+    }
+    switch ($actionName) {
+        'upload' {
+            $state.CliModels = @(Resolve-CliModels $app $Request.models)
+            $button = $c.Buttons.Upload
+        }
+        { $_ -in @('deploy','dispatch') } {
+            if (-not $c.Version.Text.Trim()) { throw 'Set version before deploy or dispatch.' }
+            if ($app.bundles -and @($app.bundles).Count -gt 0) { $state.CliBundles = Resolve-CliBundles $app $Request.bundles }
+            $button = if ($actionName -eq 'deploy') { $c.Buttons.Deploy } else { $c.Buttons.Dispatch }
+        }
+        'load-runs' { $button = $c.Buttons.LoadRuns }
+        'publish-run' {
+            if (-not $Request.runId) { throw 'publish-run requires runId.' }
+            if (-not $state.LoadedRuns -or $state.LoadedRuns.Count -eq 0) { $c.Buttons.LoadRuns.PerformClick() }
+            $idx = -1
+            for ($i = 0; $i -lt $state.LoadedRuns.Count; $i++) { if ("$($state.LoadedRuns[$i].databaseId)" -eq "$($Request.runId)") { $idx = $i; break } }
+            if ($idx -lt 0) { throw "Run $($Request.runId) is not available in the selected workflow." }
+            $c.Run.SelectedIndex = $idx; $button = $c.Buttons.PublishRun
+        }
+        'undraft' { $button = $c.Buttons.Undraft }
+        'make-public' {
+            $state.CliConfirmed = $true; $button = $c.Buttons.MakePublic
+        }
+        'make-private' { $button = $c.Buttons.MakePrivate }
+        'open-actions' { $button = $c.Buttons.Actions }
+        'open-release' { $button = $c.Buttons.ReleasePage }
+        'copy-command' { $button = $c.Buttons.Copy }
+        'task' {
+            if (-not $Request.taskName) { throw 'task requires taskName.' }
+            $idx = -1
+            for ($i = 0; $i -lt $c.Task.Items.Count; $i++) { if ($c.Task.Items[$i] -eq $Request.taskName) { $idx = $i; break } }
+            if ($idx -lt 0) { throw "Unknown task '$($Request.taskName)'." }
+            $c.Task.SelectedIndex = $idx; $button = $c.Buttons.Task
+        }
+        'git-status' { $button = $c.Buttons.GitStatus }
+        'git-add' { $button = $c.Buttons.GitAdd }
+        'git-commit' { $button = $c.Buttons.GitCommit }
+        'git-push' { $button = $c.Buttons.GitPush }
+        'update' { $button = $GuiState.UpdateButton }
+        default { throw "Unknown action '$actionName'. Use help for available actions." }
+    }
+    if (-not $button -or -not $button.Enabled) { throw "The '$actionName' control is unavailable for target $($app.name)." }
+    if ($actionName -eq 'update') {
+        # Reply over the pipe before closing the form; otherwise the CLI client sees a
+        # broken connection instead of the acknowledgement for its update request.
+        $GuiState.CliConfirmed = $true
+        $updateTimer = New-Object System.Windows.Forms.Timer
+        $updateTimer.Interval = 750
+        $updateTimer.Add_Tick({
+            $updateTimer.Stop()
+            try { $button.PerformClick() }
+            finally { $GuiState.CliConfirmed = $false; $updateTimer.Dispose() }
+        }.GetNewClosure())
+        $updateTimer.Start()
+        return [pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $state.Id; action = $actionName; scheduled = $true; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text; running = [bool]$state.IsRunning; dryRun = [bool]$c.DryRun.Checked } }
+    }
+    $state.CliConfirmed = $true
+    try { $button.PerformClick() }
+    finally {
+        $GuiState.CliConfirmed = $false
+        $state.CliConfirmed = $false
+        $state.CliModels = $null
+        $state.CliBundles = $null
+    }
+    return [pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $state.Id; action = $actionName; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text; running = [bool]$state.IsRunning; dryRun = [bool]$c.DryRun.Checked } }
+}
+
+function Start-CockpitPipeServer {
+    param($GuiState, $Queue)
+    $pipeName = $script:ControlPipeName
+    $serverLoop = {
+        param($GuiState, $Queue, $PipeName)
+        while (-not $GuiState.Stopping) {
+            $pipe = $null
+            try {
+                $options = [System.IO.Pipes.PipeOptions]::Asynchronous -bor [System.IO.Pipes.PipeOptions]::CurrentUserOnly
+                $pipe = [System.IO.Pipes.NamedPipeServerStream]::new($PipeName,
+                    [System.IO.Pipes.PipeDirection]::InOut, 1, [System.IO.Pipes.PipeTransmissionMode]::Byte,
+                    $options, 4096, 4096)
+                $GuiState.Pipe = $pipe
+                $pipe.WaitForConnection()
+                if ($GuiState.Stopping) { break }
+                $reader = [System.IO.StreamReader]::new($pipe, [System.Text.Encoding]::UTF8, $false, 4096, $true)
+                $writer = [System.IO.StreamWriter]::new($pipe, [System.Text.Encoding]::UTF8, 4096, $true)
+                $writer.AutoFlush = $true
+                $request = $reader.ReadLine() | ConvertFrom-Json -ErrorAction Stop
+                $item = [hashtable]::Synchronized(@{ Request = $request; Response = $null; Done = (New-Object System.Threading.ManualResetEvent($false)) })
+                $Queue.Enqueue($item)
+                if ($item.Done.WaitOne(120000)) { $reply = $item.Response }
+                else { $reply = [pscustomobject]@{ ok = $false; error = 'The UI did not process the command within 120 seconds.' } }
+                $writer.WriteLine(($reply | ConvertTo-Json -Compress -Depth 12))
+                $reader.Dispose(); $writer.Dispose(); $item.Done.Dispose()
+            } catch {
+                if ($pipe -and $pipe.IsConnected) {
+                    try {
+                        $writer = [System.IO.StreamWriter]::new($pipe, [System.Text.Encoding]::UTF8, 4096, $true)
+                        $writer.AutoFlush = $true
+                        $writer.WriteLine(([pscustomobject]@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress))
+                    } catch { }
+                }
+                if (-not $GuiState.Stopping) { Start-Sleep -Milliseconds 250 }
+            } finally {
+                $GuiState.Pipe = $null
+                if ($pipe) { $pipe.Dispose() }
+            }
+        }
+    }
+    # A PowerShell script block cannot run as a raw .NET ThreadStart without a
+    # PowerShell runspace; that raises an unhandled PSInvalidOperationException and
+    # terminates the compiled GUI. Give the pipe loop its own runspace instead.
+    $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $runspace.Open()
+    $worker = [System.Management.Automation.PowerShell]::Create()
+    $worker.Runspace = $runspace
+    $null = $worker.AddScript($serverLoop.ToString())
+    $null = $worker.AddArgument($GuiState)
+    $null = $worker.AddArgument($Queue)
+    $null = $worker.AddArgument($pipeName)
+    $GuiState.ServerRunspace = $runspace
+    $GuiState.ServerWorker = $worker
+    $GuiState.ServerAsync = $worker.BeginInvoke()
+}
+
 function Show-Gui {
     # WinForms needs an STA thread; pwsh (PS7) defaults to MTA. Relaunch self STA when run as .ps1.
     if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA' -and $script:SelfPath) {
@@ -1066,6 +1427,7 @@ function Show-Gui {
 
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
+    $pipeName = $script:ControlPipeName
 
     $form = New-Object System.Windows.Forms.Form
     # Px does the DPI scaling (see the layout table); WinForms must not scale a second time.
@@ -1087,7 +1449,7 @@ function Show-Gui {
     # ── Top bar: Update (rebuild this exe from the .ps1, restart) ─────────────────
     # Added after the Fill tab control: WinForms docks the last-added control first, so the bar takes the top
     # edge and the tabs fill what is left. Sized before its right-anchored button is added (see the layout rules).
-    $guiState = @{ CloseConfirmed = $false }
+    $guiState = [hashtable]::Synchronized(@{ CloseConfirmed = $false; CliConfirmed = $false; Stopping = $false; Form = $form })
     $appDir = $AppDir
     $topBar = New-Object System.Windows.Forms.Panel
     $topBar.Dock = 'Top'
@@ -1123,8 +1485,10 @@ function Show-Gui {
         if ($running.Count -gt 0) {
             $question = "Still running: $(($running | ForEach-Object { $_.Text }) -join ', ') — those commands will be stopped.`n`n$question"
         }
-        $ans = [System.Windows.Forms.MessageBox]::Show($question, 'Update InstaladorBUDA', 'YesNo', 'Question')
-        if ($ans -ne 'Yes') { return }
+        if (-not $guiState.CliConfirmed) {
+            $ans = [System.Windows.Forms.MessageBox]::Show($question, 'Update InstaladorBUDA', 'YesNo', 'Question')
+            if ($ans -ne 'Yes') { return }
+        }
         try {
             Start-UpdateHelper $appDir $PID
         } catch {
@@ -1159,7 +1523,10 @@ function Show-Gui {
         $tabs.TabPages.Insert($insertAt, $page)
         $tabs.SelectedTab = $page
         return $page
-    }
+    }.GetNewClosure()
+    $guiState.Tabs = $tabs
+    $guiState.NewJobTab = $newJobTab
+    $guiState.UpdateButton = $btnUpdate
     $script:jobCounter = 0
 
     $suppressAddTabReentry = $false
@@ -1173,6 +1540,36 @@ function Show-Gui {
 
     # Start with one job tab so the window isn't empty on first launch.
     & $newJobTab | Out-Null
+
+    $controlQueue = [System.Collections.Queue]::Synchronized((New-Object System.Collections.Queue))
+    $guiState.RequestQueue = $controlQueue
+    $controlTimer = New-Object System.Windows.Forms.Timer
+    $controlTimer.Interval = 100
+    $controlTimer.Add_Tick({
+        while ($controlQueue.Count -gt 0) {
+            $item = $controlQueue.Dequeue()
+            try { $item.Response = Invoke-CockpitRequest $guiState $item.Request }
+            catch { $item.Response = [pscustomobject]@{ ok = $false; error = $_.Exception.Message } }
+            finally { $item.Done.Set() | Out-Null }
+        }
+    }.GetNewClosure())
+    $form.Add_Shown({
+        $controlTimer.Start()
+        Start-CockpitPipeServer $guiState $controlQueue
+        foreach ($page in @($tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.AppendLog })) {
+            & $page.Tag.AppendLog "CLI control ready on \\.\pipe\$pipeName."
+        }
+    }.GetNewClosure())
+    $form.Add_FormClosed({
+        $guiState.Stopping = $true
+        $controlTimer.Stop()
+        if ($guiState.Pipe) { try { $guiState.Pipe.Dispose() } catch { } }
+        if ($guiState.ServerWorker) {
+            try { $guiState.ServerWorker.Stop() } catch { }
+            try { $guiState.ServerWorker.Dispose() } catch { }
+        }
+        if ($guiState.ServerRunspace) { try { $guiState.ServerRunspace.Dispose() } catch { } }
+    }.GetNewClosure())
 
     # Warn (once) if any tab has a job still running when the window is closed, and make
     # sure no background process / event subscription is left orphaned either way.
@@ -1342,7 +1739,7 @@ function New-JobTab {
     $grpPub.Controls.AddRange(@($lblWf, $cmbWf, $btnLoadRuns, $lblRun, $cmbRun, $btnPubRun, $btnUndraft, $btnRelPage))
     $y += $boxH + $UI.BoxGap
     # Per-tab (not $script:) — concurrent tabs must not share which runs were loaded.
-    $tabState = @{ LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null }
+    $tabState = @{ Id = $Number; LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null; CliModels = $null; CliBundles = $null; CliConfirmed = $false }
 
     # ── Repo visibility (public/private toggle, e.g. to work around Actions minutes
     # running out on a private repo — flip public just to let a workflow run, then
@@ -1619,7 +2016,7 @@ function New-JobTab {
             $commands | ForEach-Object { & $appendLog "    $_" }
             return
         }
-        if (-not $noConfirm) {
+        if (-not $noConfirm -and -not $tabState.CliConfirmed) {
             $msg = "This will run, in`n$repoRoot :`n`n" + ($commands -join "`n") + "`n`nContinue?"
             $ans = [System.Windows.Forms.MessageBox]::Show($msg, "Confirm — $label", 'YesNo', 'Question')
             if ($ans -ne 'Yes') { & $appendLog "Cancelled: $label"; return }
@@ -1761,7 +2158,9 @@ function New-JobTab {
     $btnUpload.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if ($app.uploadModels -and @($app.uploadModels).Count -gt 0) {
-            $sel = Show-ModelPicker $app
+            if ($null -ne $tabState.CliModels) { $sel = @($tabState.CliModels) }
+            else { $sel = Show-ModelPicker $app }
+            $tabState.CliModels = $null
             if ($null -eq $sel) { & $appendLog "Upload cancelled."; return }
             if (@($sel).Count -eq 0) { & $appendLog "No models selected — nothing to upload."; return }
             & $run (Build-UploadCommands $app $sel) "Upload models ($($app.name)): $($sel -join ', ')" $true $app.repoRoot
@@ -1782,7 +2181,9 @@ function New-JobTab {
         # plain tag push, exactly as before.
         $bundles = 'all'
         if ($app.bundles -and @($app.bundles).Count -gt 0) {
-            $picked = Show-BundlePicker $app
+            if ($null -ne $tabState.CliBundles) { $picked = [string]$tabState.CliBundles }
+            else { $picked = Show-BundlePicker $app }
+            $tabState.CliBundles = $null
             if ($null -eq $picked) { & $appendLog "Deploy cancelled."; return }
             if ([string]::IsNullOrWhiteSpace($picked)) { & $appendLog "No bundles selected — nothing to deploy."; return }
             $bundles = Resolve-BundleSelection $app $picked
@@ -1811,7 +2212,9 @@ function New-JobTab {
         }
         $bundles = 'all'
         if ($app.bundles -and @($app.bundles).Count -gt 0) {
-            $picked = Show-BundlePicker $app
+            if ($null -ne $tabState.CliBundles) { $picked = [string]$tabState.CliBundles }
+            else { $picked = Show-BundlePicker $app }
+            $tabState.CliBundles = $null
             if ($null -eq $picked) { & $appendLog "Trigger cancelled."; return }
             if ([string]::IsNullOrWhiteSpace($picked)) { & $appendLog "No bundles selected — nothing to build."; return }
             $bundles = $picked
@@ -1834,7 +2237,7 @@ function New-JobTab {
         if ($null -ne $app.manageVisibility -and -not [bool]$app.manageVisibility) { & $appendLog "Visibility changes are disabled for $($app.name)."; return }
         $repoSlug = Resolve-AppRepo $app
         if (-not $repoSlug) { & $appendLog "Could not resolve the GitHub repo for $($app.name) (no git remote?)."; return }
-        if (-not $chkDry.Checked) {
+        if (-not $chkDry.Checked -and -not $tabState.CliConfirmed) {
             $ans = [System.Windows.Forms.MessageBox]::Show(
                 "Make $repoSlug PUBLIC?`n`nAnyone will be able to view (not push to) this repo until you switch it back to private.",
                 'Confirm — Make public', 'YesNo', 'Warning')
@@ -1968,6 +2371,18 @@ function New-JobTab {
         & $run (Build-GitPushCommands $app) "git push ($($app.name), $branch)" $false $app.repoRoot (Build-GitAfterLines $app 'push') $refreshGit
     }.GetNewClosure())
 
+    $tabState.AppendLog = $appendLog
+    $tabState.Controls = @{
+        Target = $cmbTarget; Version = $txtVer; Publish = $chkPublish; DryRun = $chkDry; Notes = $txtNotes
+        Workflow = $cmbWf; Run = $cmbRun; Task = $cmbTask; GitAdd = $txtGitAdd; GitMessage = $txtGitMsg
+        Log = $logBox; Visibility = $lblVis
+        Buttons = @{
+            Upload = $btnUpload; Deploy = $btnDeploy; Dispatch = $btnDispatch; Copy = $btnCopy; Actions = $btnActions
+            LoadRuns = $btnLoadRuns; PublishRun = $btnPubRun; Undraft = $btnUndraft; ReleasePage = $btnRelPage
+            MakePublic = $btnMakePublic; MakePrivate = $btnMakePrivate; Task = $btnTask
+            GitAdd = $btnGitAdd; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush
+        }
+    }
     $page.Tag = $tabState
     & $refresh
     & $refreshVisibility
@@ -1981,6 +2396,7 @@ function New-JobTab {
 }
 
 # ── Entry point ──────────────────────────────────────────────────────────────
+if ($Cli) { Invoke-CockpitCli -Json $Cli; return }
 if ($Console) { Show-ConsoleMenu; return }
 try {
     Show-Gui

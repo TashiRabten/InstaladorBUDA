@@ -30,6 +30,60 @@ program. **Adding a new app is a JSON edit — no code changes.**
 ```
 Then double-click `InstaladorBUDA.exe`. **Keep `apps.json` in the same folder as the
 `.exe`** — it is read at runtime so you can add/edit apps without recompiling.
+When the script changes, rebuild/restart the executable before using new CLI commands;
+an already-open executable keeps its original embedded script. The cockpit's **Update**
+button performs that rebuild and warns if running jobs would be stopped.
+
+### Control the visible cockpit from the CLI
+
+The GUI exposes a local, current-user-only named pipe. CLI requests are applied to the
+same tabs and controls used by mouse clicks, so the selected target, version, options,
+job status, and output remain visible in the cockpit. Start it from a terminal:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"start"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"list"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"status"}'
+```
+
+`start` opens the visible cockpit if it is not already running. Then configure its first
+tab and run a job through the same GUI controls:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"configure","tab":1,"target":"SegBUDA","version":"1.0.18","notes":"Release notes"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"dispatch","bundles":["essential"],"confirm":true,"waitMs":900000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"status","tab":1}'
+```
+
+Use `new-tab` and `select-tab` to manage concurrent jobs. `close` closes the cockpit after
+the response has been returned. Both `close` and `update` require `"confirm":true`; if any
+job is running, also pass `"stopRunning":true` to confirm that it may be stopped. Update
+returns an acknowledgement before rebuilding and restarting the cockpit.
+
+An `action` request can also
+include `target`, `version`, `publish`, `dryRun`, and `notes` to configure and run in one
+call. Bundle IDs/names and model IDs are available from `list`; omit `bundles` to use the
+configured defaults, or pass `"all"`. `waitMs` waits for the tab's job to finish and returns
+its final status/log tail.
+
+Available actions mirror the cockpit: `upload`, `deploy`, `dispatch`, `load-runs`,
+`publish-run` (with `runId`), `undraft`, `make-public`, `make-private`, `open-actions`,
+`open-release`, `copy-command`, `task` (with `taskName`), `git-status`, `git-add`,
+`git-commit`, `git-push`, and `update`. Actions that change a repository or publish work
+(`upload`, `deploy`, `dispatch`, `publish-run`, `undraft`, visibility changes, `git-add`,
+`git-commit`, `git-push`, and `task`) require `"confirm":true`. Set `dryRun:true` to show
+commands in the visible log without running them. CLI output is one JSON response per
+command; failures return a nonzero exit code. If the GUI is closed, commands other than
+`start` return a clear error.
+
+For example, stage, commit, and push selected files through the same Git panel controls:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"configure","tab":1,"gitPaths":"InstaladorBUDA.ps1 README.md","commitMessage":"Add cockpit CLI control"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-add","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-commit","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-push","confirm":true,"waitMs":30000}'
+```
 
 **Prerequisites:** [`git`](https://git-scm.com/) and the
 [GitHub CLI `gh`](https://cli.github.com/) on `PATH`, with `gh auth login` done once.
