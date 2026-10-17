@@ -104,6 +104,26 @@ tab's log. `Prepare and stage` sets up `main` and `origin`, scans and stages the
 review the staged paths in the log before `Commit and push`. The publish phase checks the
 prepared tree again and stops if files changed.
 
+The bootstrap group also has **Actions secrets...**. It targets the selected app's GitHub
+repository and opens a manager with the existing secret names, an add/update field, and a
+delete option. Values are masked and passed to `gh secret set` through standard input; they
+never go in a CLI request, process arguments, a temporary file, or the job log. The GUI asks
+before adding/replacing or deleting a secret. The CLI action opens that same manager and
+requires explicit confirmation. It returns a scheduled acknowledgement before opening the
+dialog; after closing it, inspect the tab log or request `status` for the result:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"target":"ScanBUDA","action":"actions-secrets","confirm":true}'
+```
+
+Do not add `secret`, `token`, `value`, `apiKey`, or `password` to the request JSON. The
+handler rejects those fields. Close the manager to leave the repository unchanged. Secret
+names follow [GitHub's Actions naming rules](https://docs.github.com/en/actions/reference/security/secrets#naming-your-secrets); the manager lists names only because GitHub does not
+return stored secret values. For ScanBUDA's private OCR bridge, use the name
+`TRADUTORBUDA_REPO_TOKEN` and a fine-grained token with read-only access to the private
+TradutorBUDA repository. The rebuilt executable exposes the action in `help`; actual GitHub
+secret updates have not been run from the dialog.
+
 TradutorBUDA's suggested version comes from the newest published release tag, with local
 tags as a fallback when no release is available. Deploy checks the local tag, remote tag,
 and GitHub release before creating a tag, and stops if that version is already present.
@@ -158,24 +178,30 @@ fields and controls:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"add-app","name":"MyApp","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","action":"create-repo","githubRepo":"owner/MyApp","confirm":true}'
 & .\InstaladorBUDA.exe -Cli '{"command":"bootstrap-plan","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}'
 ```
 
 The GUI's **Add app** button uses the same validation and registration handler. It appends
-a Git-only entry to `apps.json`, selects it in all open tabs, and leaves the repo creation
-and Git bootstrap phases to their existing controls. When a build workflow is ready, edit
-that entry in `apps.json` with the release fields below.
+a Git-only entry to `apps.json` and selects it in all open tabs. **Create private repo**
+creates the empty GitHub repository from the `owner/name` field inside InstaladorBUDA; it
+does not upload files. When a build workflow is ready, edit that entry in `apps.json` with
+the release fields below.
 
 The same sequence is available in the GUI's **GitHub repository bootstrap** group. Enter
 the project folder, GitHub `owner/name`, an initial commit message, and optionally a
 Gitleaks path. Use **Browse...** to select an existing local project folder; when **App
-name** is blank, the selected folder name is suggested. Leave the scanner path blank to use the automatic lookup. Run **Preflight**,
-then **Prepare and stage** and review every staged path in the log. Use **Commit and push**
-only after that review; the cockpit asks for confirmation before each local or remote
-mutation.
+name** is blank, the selected folder name is suggested. If the GitHub repo field still
+contains the selected target's default, Browse also suggests `owner/folder-name`. Click
+**Add app** to register it. If its remote does not exist yet, click **Create private repo**;
+this creates an empty private repository without publishing files. Leave the scanner path blank to use the
+automatic lookup. Run **Preflight**, then **Prepare and stage** and review every staged path
+in the log. Use **Commit and push** only after that review; the cockpit asks for confirmation
+before each local or remote mutation.
 
 Bootstrap requires `git`, authenticated `gh`, a configured Git author name and email, an
-empty GitHub remote, and Gitleaks. Gitleaks is found on `PATH` or in a sibling
+empty GitHub remote, and Gitleaks. Managing Actions secrets requires authenticated `gh`
+with permission to manage repository secrets. Gitleaks is found on `PATH` or in a sibling
 `gitleaks_*_windows_*` folder; pass `gitleaksPath` to select another executable.
 The bootstrap fields can be saved on a tab with `configure` (`bootstrapRoot`, `githubRepo`,
 `bootstrapMessage`, and `gitleaksPath`); later bootstrap commands use those values when

@@ -66,6 +66,87 @@ function Resolve-CliModels {
     return ,$tokens
 }
 
+function Assert-ActionsSecretsRequest {
+    param($Request, $Controls)
+
+    foreach ($field in @('secret','secretValue','value','token','apiKey','password')) {
+        if (Test-CliProperty $Request $field) { throw 'Do not include a credential in CLI request JSON. The visible masked prompt collects it locally.' }
+    }
+    if (-not $Request.confirm) { throw 'actions-secrets requires confirm:true.' }
+    if ($Controls.DryRun.Checked) { throw 'Disable Dry run before managing GitHub Actions secrets.' }
+}
+
+function Invoke-CockpitActionsSecretsDialog {
+    param($Button, $State, $Controls)
+
+    $secretManagerTimer = New-Object System.Windows.Forms.Timer
+    $secretManagerTimer.Interval = 250
+    $secretManagerTimer.Add_Tick({
+        $secretManagerTimer.Stop()
+        try { $Button.PerformClick() } finally { $secretManagerTimer.Dispose() }
+    }.GetNewClosure())
+    $secretManagerTimer.Start()
+    return [pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $State.Id; action = 'actions-secrets'; target = "$($Controls.Target.SelectedItem)"; scheduled = $true; modal = 'actions-secrets'; dryRun = [bool]$Controls.DryRun.Checked } }
+}
+
+function Select-CockpitCliTarget {
+    param($Request, $Controls)
+
+    if (-not (Test-CliProperty $Request 'target')) { return }
+    $app = Get-App ([string]$Request.target)
+    if (-not $app -or -not $Controls.Target.Items.Contains($app.name)) { throw "Unknown target '$($Request.target)'." }
+    $Controls.Target.SelectedItem = $app.name
+}
+
+function Select-CockpitCliTask {
+    param($Request, $Controls)
+
+    if (-not (Test-CliProperty $Request 'taskName')) { return }
+    $taskIndex = -1
+    for ($i = 0; $i -lt $Controls.Task.Items.Count; $i++) {
+        if ($Controls.Task.Items[$i] -eq $Request.taskName) { $taskIndex = $i; break }
+    }
+    if ($taskIndex -lt 0) { throw "Unknown task '$($Request.taskName)'." }
+    $Controls.Task.SelectedIndex = $taskIndex
+}
+
+function Invoke-CockpitCliConfiguration {
+    param($Command, $Request, $State, $Controls)
+
+    Select-CockpitCliTarget $Request $Controls
+    $textFields = [ordered]@{
+        version = 'Version'; notes = 'Notes'; workflow = 'Workflow'; gitPaths = 'GitAdd'
+        commitMessage = 'GitMessage'; bootstrapRoot = 'BootstrapRoot'; githubRepo = 'BootstrapRepo'
+        bootstrapMessage = 'BootstrapMessage'; gitleaksPath = 'BootstrapScanner'
+    }
+    foreach ($field in $textFields.Keys) {
+        if (Test-CliProperty $Request $field) {
+            $control = $Controls[$textFields[$field]]
+            $control.Text = [string]$Request.$field
+        }
+    }
+    if (Test-CliProperty $Request 'publish') { $Controls.Publish.Checked = [bool]$Request.publish }
+    if (Test-CliProperty $Request 'dryRun') { $Controls.DryRun.Checked = [bool]$Request.dryRun }
+    Select-CockpitCliTask $Request $Controls
+    & $State.AppendLog ("CLI configured target=$($Controls.Target.SelectedItem), version=$($Controls.Version.Text).")
+
+    if ($Command -ne 'configure') { return $null }
+    return [pscustomobject]@{ ok = $true; command = $Command; data = @{
+        tabId = $State.Id; target = "$($Controls.Target.SelectedItem)"; version = $Controls.Version.Text
+        bootstrapRoot = $Controls.BootstrapRoot.Text; githubRepo = $Controls.BootstrapRepo.Text
+        bootstrapMessage = $Controls.BootstrapMessage.Text; gitleaksPath = $Controls.BootstrapScanner.Text
+    } }
+}
+
+function Invoke-CockpitCliRepository {
+    param($Request, $Controls)
+
+    if (-not (Test-CliProperty $Request 'githubRepo')) { return }
+    $requestedRepo = ([string]$Request.githubRepo).Trim().TrimEnd('/')
+    if ($requestedRepo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'create-repo githubRepo must be owner/name.' }
+    $Controls.BootstrapRepo.Text = $requestedRepo
+}
+
 function Invoke-CockpitRequest {
     param($GuiState, $Request)
     $command = [string]$Request.command
@@ -75,7 +156,7 @@ function Invoke-CockpitRequest {
             command = 'help'
             data = @{
                 commands = @('start','close','list','status','new-tab','select-tab','configure','release-plan','add-app','bootstrap-plan','bootstrap-prepare','bootstrap-publish','action')
-                actions = @('upload','deploy','retag-deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-commit','git-push','update')
+                actions = @('upload','deploy','retag-deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-commit','git-push','create-repo','actions-secrets','update')
                 parameters = @{
                     configure = @{ required = @(); optional = @('tab','target','version','publish','dryRun','notes','workflow','gitPaths','commitMessage','taskName','bootstrapRoot','githubRepo','bootstrapMessage','gitleaksPath') }
                     releasePlan = @{ required = @(); optional = @('tab','target','version') }
@@ -83,17 +164,21 @@ function Invoke-CockpitRequest {
                     bootstrapPlan = @{ required = @(); optional = @('tab','repoRoot','githubRepo','gitleaksPath','waitMs') }
                     bootstrapPrepare = @{ required = @('confirm:true'); optional = @('tab','repoRoot','githubRepo','gitleaksPath','waitMs') }
                     bootstrapPublish = @{ required = @('confirm:true'); optional = @('tab','repoRoot','githubRepo','commitMessage','gitleaksPath','waitMs') }
-                    action = @{ required = @('action'); optional = @('tab','target','version','publish','dryRun','notes','bundles','models','runId','taskName','gitPaths','commitMessage','confirm','replaceExistingTag','waitMs') }
+                    action = @{ required = @('action'); optional = @('tab','target','version','publish','dryRun','notes','bundles','models','runId','taskName','gitPaths','commitMessage','githubRepo','confirm','replaceExistingTag','waitMs') }
                 }
                 examples = @(
                     '{"command":"add-app","name":"MyApp","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}',
+                    '{"command":"action","action":"create-repo","githubRepo":"owner/AI-config","confirm":true}',
                     '{"command":"release-plan","target":"TradutorBUDA"}',
                     '{"command":"action","tab":1,"action":"deploy","target":"TradutorBUDA","version":"1.8.2","notes":"Release notes","confirm":true,"waitMs":900000}',
-                    '{"command":"action","tab":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}'
+                    '{"command":"action","tab":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}',
+                    '{"command":"action","tab":1,"action":"actions-secrets","target":"ScanBUDA","confirm":true}'
                 )
                 safety = @{
                     deploy = 'Rejects an existing local tag, remote tag, or GitHub release.'
                     retagDeploy = 'Moves an existing remote tag only with replaceExistingTag:true and confirm:true; uses a remote-object lease.'
+                    createRepo = 'Creates an empty private GitHub repository and does not stage or push local files.'
+                    actionsSecrets = 'Requires confirm:true. Opens the visible Actions-secrets manager. Values are sent only through GitHub CLI standard input and are not accepted in request JSON.'
                 }
                 parity = 'Every operational capability is available in the visible GUI and CLI; command requests drive the same visible controls.'
                 pipe = $script:ControlPipeName
@@ -208,42 +293,14 @@ function Invoke-CockpitRequest {
     $GuiState.Tabs.SelectedTab = $page
 
     if ($command -eq 'configure' -or $command -eq 'action') {
-        if (Test-CliProperty $Request 'target') {
-            $app = Get-App ([string]$Request.target)
-            if (-not $app -or -not ($c.Target.Items.Contains($app.name))) { throw "Unknown target '$($Request.target)'." }
-            $c.Target.SelectedItem = $app.name
-            $app = Get-App ([string]$c.Target.SelectedItem)
-        }
-        if (Test-CliProperty $Request 'version') { $c.Version.Text = [string]$Request.version }
-        if (Test-CliProperty $Request 'publish') { $c.Publish.Checked = [bool]$Request.publish }
-        if (Test-CliProperty $Request 'dryRun') { $c.DryRun.Checked = [bool]$Request.dryRun }
-        if (Test-CliProperty $Request 'notes') { $c.Notes.Text = [string]$Request.notes }
-        if (Test-CliProperty $Request 'workflow') { $c.Workflow.Text = [string]$Request.workflow }
-        if (Test-CliProperty $Request 'gitPaths') { $c.GitAdd.Text = [string]$Request.gitPaths }
-        if (Test-CliProperty $Request 'commitMessage') { $c.GitMessage.Text = [string]$Request.commitMessage }
-        if (Test-CliProperty $Request 'bootstrapRoot') { $c.BootstrapRoot.Text = [string]$Request.bootstrapRoot }
-        if (Test-CliProperty $Request 'githubRepo') { $c.BootstrapRepo.Text = [string]$Request.githubRepo }
-        if (Test-CliProperty $Request 'bootstrapMessage') { $c.BootstrapMessage.Text = [string]$Request.bootstrapMessage }
-        if (Test-CliProperty $Request 'gitleaksPath') { $c.BootstrapScanner.Text = [string]$Request.gitleaksPath }
-        if (Test-CliProperty $Request 'taskName') {
-            $idx = -1
-            for ($i = 0; $i -lt $c.Task.Items.Count; $i++) { if ($c.Task.Items[$i] -eq $Request.taskName) { $idx = $i; break } }
-            if ($idx -lt 0) { throw "Unknown task '$($Request.taskName)'." }
-            $c.Task.SelectedIndex = $idx
-        }
-        & $state.AppendLog ("CLI configured target=$($c.Target.SelectedItem), version=$($c.Version.Text).")
-        if ($command -eq 'configure') {
-            return [pscustomobject]@{ ok = $true; command = $command; data = @{
-                tabId = $state.Id; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text
-                bootstrapRoot = $c.BootstrapRoot.Text; githubRepo = $c.BootstrapRepo.Text
-                bootstrapMessage = $c.BootstrapMessage.Text; gitleaksPath = $c.BootstrapScanner.Text
-            } }
-        }
+        $configuration = Invoke-CockpitCliConfiguration $command $Request $state $c
+        if ($null -ne $configuration) { return $configuration }
     }
 
     if ($command -ne 'action') { throw "Unknown command '$command'. Use help for the command list." }
     $actionName = ([string]$Request.action).ToLowerInvariant()
     if ($state.IsRunning -and $actionName -ne 'update') { throw "Tab $($state.Id) already has a job running. Use another tab or wait for it to finish." }
+    if ($actionName -eq 'actions-secrets') { Assert-ActionsSecretsRequest $Request $c }
     if ($actionName -eq 'update') {
         if (-not $Request.confirm) { throw 'update requires confirm:true.' }
         $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
@@ -253,7 +310,7 @@ function Invoke-CockpitRequest {
         }
     }
     $app = Get-App ([string]$c.Target.SelectedItem)
-    $confirmationActions = @('upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-commit','git-push','task')
+    $confirmationActions = @('upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-commit','git-push','create-repo','actions-secrets','task')
     if ($actionName -eq 'retag-deploy') {
         if (-not $Request.replaceExistingTag) { throw 'retag-deploy requires replaceExistingTag:true.' }
         if (-not $Request.confirm) { throw 'retag-deploy requires confirm:true.' }
@@ -262,7 +319,10 @@ function Invoke-CockpitRequest {
     if ($actionName -in $confirmationActions -and -not $c.DryRun.Checked -and -not $Request.confirm) {
         throw "$actionName requires confirm:true (or set dryRun:true to preview only)."
     }
-    switch ($actionName) {
+    if ($actionName -eq 'actions-secrets') {
+        $state.LastActionsSecretsResult = $null
+        $button = $c.Buttons.ActionsSecrets
+    } else { switch ($actionName) {
         'upload' {
             $state.CliModels = @(Resolve-CliModels $app $Request.models)
             $button = $c.Buttons.Upload
@@ -302,10 +362,17 @@ function Invoke-CockpitRequest {
         'git-add' { $button = $c.Buttons.GitAdd }
         'git-commit' { $button = $c.Buttons.GitCommit }
         'git-push' { $button = $c.Buttons.GitPush }
+        'create-repo' {
+            Invoke-CockpitCliRepository $Request $c
+            $button = $c.Buttons.CreateRepo
+        }
         'update' { $button = $GuiState.UpdateButton }
         default { throw "Unknown action '$actionName'. Use help for available actions." }
-    }
+    } }
     if (-not $button -or -not $button.Enabled) { throw "The '$actionName' control is unavailable for target $($app.name)." }
+    if ($actionName -eq 'actions-secrets') {
+        return (Invoke-CockpitActionsSecretsDialog $button $state $c)
+    }
     if ($actionName -eq 'update') {
         # Reply over the pipe before closing the form; otherwise the CLI client sees a
         # broken connection instead of the acknowledgement for its update request.

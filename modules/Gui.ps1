@@ -209,9 +209,11 @@ function New-JobTab {
     Set-Box $lblTarget $UI.Pad $y $UI.LabelWidth $UI.RowH
     $cmbTarget = New-Object System.Windows.Forms.ComboBox
     $cmbTarget.DropDownStyle = 'DropDownList'
+    $cmbTarget.Sorted = $true
     Set-Field $cmbTarget $uiFont $UI.FieldX $y 240
+    $defaultTarget = if ($script:AppRegistry.Apps.Count -gt 0) { [string]$script:AppRegistry.Apps[0].name } else { $null }
     $script:AppRegistry.Apps | ForEach-Object { [void]$cmbTarget.Items.Add($_.name) }
-    if ($cmbTarget.Items.Count -gt 0) { $cmbTarget.SelectedIndex = 0 }
+    if ($cmbTarget.Items.Count -gt 0) { $cmbTarget.SelectedItem = $defaultTarget }
 
     $y += $UI.RowPitch
     $lblVer = New-Object System.Windows.Forms.Label
@@ -491,15 +493,22 @@ function New-JobTab {
     $txtBootstrapScanner.Anchor = 'Top,Left,Right'
 
     $rowY += $UI.BoxRowPitch
+    $btnBootstrapCreateRepo = New-Object System.Windows.Forms.Button
+    $btnBootstrapCreateRepo.Text = 'Create private repo'; $btnBootstrapCreateRepo.Font = $uiFont
+    $btnBootstrapActionsSecrets = New-Object System.Windows.Forms.Button
+    $btnBootstrapActionsSecrets.Text = 'Actions secrets...'; $btnBootstrapActionsSecrets.Font = $uiFont
+    $btnBootstrapAddApp = New-Object System.Windows.Forms.Button
+    $btnBootstrapAddApp.Text = 'Add app'; $btnBootstrapAddApp.Font = $uiFont
+    [void](Set-ButtonRow @($btnBootstrapAddApp, $btnBootstrapCreateRepo, $btnBootstrapActionsSecrets) $UI.BoxPad $rowY $UI.BootstrapButtonMinW)
+
+    $rowY += $UI.BoxRowPitch
     $btnBootstrapPlan = New-Object System.Windows.Forms.Button
     $btnBootstrapPlan.Text = 'Preflight'; $btnBootstrapPlan.Font = $uiFont
     $btnBootstrapPrepare = New-Object System.Windows.Forms.Button
     $btnBootstrapPrepare.Text = 'Prepare and stage'; $btnBootstrapPrepare.Font = $uiFont
     $btnBootstrapPublish = New-Object System.Windows.Forms.Button
     $btnBootstrapPublish.Text = 'Commit and push'; $btnBootstrapPublish.Font = $uiFont
-    $btnBootstrapAddApp = New-Object System.Windows.Forms.Button
-    $btnBootstrapAddApp.Text = 'Add app'; $btnBootstrapAddApp.Font = $uiFont
-    [void](Set-ButtonRow @($btnBootstrapAddApp, $btnBootstrapPlan, $btnBootstrapPrepare, $btnBootstrapPublish) $UI.BoxPad $rowY $UI.BootstrapButtonMinW)
+    [void](Set-ButtonRow @($btnBootstrapPlan, $btnBootstrapPrepare, $btnBootstrapPublish) $UI.BoxPad $rowY $UI.BootstrapButtonMinW)
 
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpBootstrap $UI.Pad $y $boxWidth $boxH
@@ -507,12 +516,14 @@ function New-JobTab {
     $grpBootstrap.Controls.AddRange(@(
         $lblBootstrapName, $txtBootstrapName, $lblBootstrapRoot, $txtBootstrapRoot, $btnBootstrapBrowse, $lblBootstrapRepo, $txtBootstrapRepo,
         $lblBootstrapMessage, $txtBootstrapMessage, $lblBootstrapScanner, $txtBootstrapScanner,
-        $btnBootstrapAddApp, $btnBootstrapPlan, $btnBootstrapPrepare, $btnBootstrapPublish))
+        $btnBootstrapAddApp, $btnBootstrapCreateRepo, $btnBootstrapActionsSecrets, $btnBootstrapPlan, $btnBootstrapPrepare, $btnBootstrapPublish))
     $y += $boxH + $UI.BoxGap
     $tips.SetToolTip($txtBootstrapScanner, 'Optional. Leave blank to find Gitleaks on PATH or in a sibling gitleaks_* folder.')
     $tips.SetToolTip($btnBootstrapPrepare, 'Sets main and origin, scans for secrets, then stages files. Review the staged paths before publishing.')
     $tips.SetToolTip($btnBootstrapPublish, 'Commits the reviewed prepared tree and pushes main to origin; stops if files changed after preparation.')
     $tips.SetToolTip($btnBootstrapAddApp, 'Registers a Git-only target in apps.json and selects it, so these bootstrap controls can continue with this project.')
+    $tips.SetToolTip($btnBootstrapCreateRepo, 'Creates a new empty private GitHub repository from the owner/name field. It does not stage or push project files.')
+    $tips.SetToolTip($btnBootstrapActionsSecrets, 'Lists repository-level GitHub Actions secret names and lets you add, replace, or delete a secret for the selected app.')
     $tips.SetToolTip($btnBootstrapBrowse, 'Choose an existing local project folder. Its folder name is suggested as the app name when that field is blank.')
 
     $initialBootstrapApp = Get-App $cmbTarget.SelectedItem
@@ -609,8 +620,10 @@ function New-JobTab {
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app -or -not $grpGit) { return }
         $branch = Get-GitBranch $app
+        $gitMarker = if (Test-Path -LiteralPath ([string]$app.repoRoot) -PathType Container) { Test-Path -LiteralPath (Join-Path ([string]$app.repoRoot) '.git') } else { $false }
         $grpGit.Text = if ($branch) { "Git  ->  $($app.name)  [$branch]   $($app.repoRoot)" }
-                       else { "Git  ->  $($app.repoRoot)  (not a git repo)" }
+                       elseif (-not $gitMarker) { "Git  ->  $($app.repoRoot)  (not initialized; use bootstrap)" }
+                       else { "Git  ->  $($app.repoRoot)  (branch unavailable)" }
         foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitCommit, $btnGitPush)) { $b.Enabled = [bool]$branch }
     }.GetNewClosure()
 
@@ -651,6 +664,9 @@ function New-JobTab {
         & $refreshGit
         $bootstrapRepo = ''
         try { $bootstrapRepo = [string](Resolve-AppRepo $app) } catch { }
+        if ([string]::IsNullOrWhiteSpace($bootstrapRepo) -and [string]::IsNullOrWhiteSpace([string]$app.workflow) -and [string]::IsNullOrWhiteSpace([string]$app.tagPrefix) -and $app.releaseRepo) {
+            $bootstrapRepo = [string]$app.releaseRepo
+        }
         if ($txtBootstrapRoot.Text -eq $tabState.BootstrapDefaults.Root) { $txtBootstrapRoot.Text = [string]$app.repoRoot }
         if ($txtBootstrapRepo.Text -eq $tabState.BootstrapDefaults.Repo) { $txtBootstrapRepo.Text = $bootstrapRepo }
         $tabState.BootstrapDefaults = @{ Root = [string]$app.repoRoot; Repo = $bootstrapRepo }
@@ -891,6 +907,63 @@ function New-JobTab {
         & $appendLog "Registered '$($added.name)' for $githubRepo. It is selected; run Preflight in this group to continue the existing bootstrap."
         return $added
     }.GetNewClosure()
+
+    $createBootstrapRepo = {
+        $githubRepo = $txtBootstrapRepo.Text.Trim().TrimEnd('/')
+        $rawRoot = $txtBootstrapRoot.Text.Trim()
+        if ($githubRepo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+            & $appendLog 'GitHub repository must be owner/name, for example TashiRabten/AI-config.'; return
+        }
+        if (-not $rawRoot -or -not (Test-Path -LiteralPath $rawRoot -PathType Container)) {
+            & $appendLog 'Choose an existing project folder first.'; return
+        }
+        if ($tabState.IsRunning) { & $appendLog 'This tab already has a running job; choose an idle tab to create the repository.'; return }
+        if (-not $HasGh) { & $appendLog 'Creating a GitHub repository requires the GitHub CLI (gh) and an authenticated session.'; return }
+        try {
+            $repoRoot = (Resolve-Path -LiteralPath $rawRoot).Path
+            $commands = Build-GitHubRepoCreateCommands $githubRepo
+            $txtBootstrapRepo.Text = $githubRepo
+            & $run $commands "Create private GitHub repository ($githubRepo)" $true $repoRoot $null $null
+        } catch {
+            & $appendLog "Repository creation stopped: $($_.Exception.Message)"
+        }
+    }.GetNewClosure()
+    $manageActionsSecrets = {
+        $tabState.LastActionsSecretsResult = 'cancelled'
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { & $appendLog 'Select an app before managing its Actions secrets.'; $tabState.LastActionsSecretsResult = 'failed'; return }
+        if ($tabState.IsRunning) { & $appendLog 'This tab already has a running job; choose an idle tab before managing Actions secrets.'; $tabState.LastActionsSecretsResult = 'failed'; return }
+        if (-not $HasGh) { & $appendLog 'Managing Actions secrets requires the GitHub CLI (gh).'; $tabState.LastActionsSecretsResult = 'failed'; return }
+        $repo = ''
+        try { $repo = [string](Resolve-AppRepo $app) }
+        catch {
+            $repo = ''
+            Write-Debug "Could not resolve the Actions-secrets repository: $($_.Exception.Message)"
+        }
+        if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -and -not $app.workflow -and -not $app.tagPrefix) {
+            $repo = [string]$app.releaseRepo
+        }
+        if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+            & $appendLog "The selected app '$($app.name)' has no GitHub owner/name repository."; $tabState.LastActionsSecretsResult = 'failed'; return
+        }
+        try {
+            $owner = $page.FindForm()
+            $result = Show-GitHubActionsSecretDialog -RepositorySlug $repo -Owner $owner
+            if (-not $result -or @($result.Operations).Count -eq 0) {
+                $tabState.LastActionsSecretsResult = 'closed'
+                & $appendLog "Actions secrets window closed without changes for $repo."
+                return
+            }
+            $tabState.LastActionsSecretsResult = 'configured'
+            foreach ($operation in @($result.Operations)) {
+                if ($operation.Action -eq 'set') { & $appendLog "Saved Actions secret '$($operation.Name)' in $repo. The value was not logged." }
+                elseif ($operation.Action -eq 'delete') { & $appendLog "Deleted Actions secret '$($operation.Name)' from $repo." }
+            }
+        } catch {
+            $tabState.LastActionsSecretsResult = 'failed'
+            & $appendLog 'Could not manage Actions secrets. Check gh authentication, repository access, and Actions-secrets permission. Secret values are not logged.'
+        }
+    }.GetNewClosure()
     $tabState.RegisterApp = $registerApp
 
     # Best-effort: if the whole app is closed while this tab's job is still running,
@@ -975,6 +1048,8 @@ function New-JobTab {
     $btnBootstrapPlan.Add_Click({ & $startBootstrap 'plan' }.GetNewClosure())
     $btnBootstrapPrepare.Add_Click({ & $startBootstrap 'prepare' }.GetNewClosure())
     $btnBootstrapPublish.Add_Click({ & $startBootstrap 'publish' }.GetNewClosure())
+    $btnBootstrapCreateRepo.Add_Click({ & $createBootstrapRepo }.GetNewClosure())
+    $btnBootstrapActionsSecrets.Add_Click({ & $manageActionsSecrets }.GetNewClosure())
     $btnBootstrapBrowse.Add_Click({
         $folderDialog = $null
         try {
@@ -988,10 +1063,27 @@ function New-JobTab {
             $owner = $page.FindForm()
             $dialogResult = if ($owner) { $folderDialog.ShowDialog($owner) } else { $folderDialog.ShowDialog() }
             if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
-                $txtBootstrapRoot.Text = $folderDialog.SelectedPath
+                $selectedRoot = (Resolve-Path -LiteralPath $folderDialog.SelectedPath).Path
+                $selectedDirectory = Get-Item -LiteralPath $selectedRoot
+                $txtBootstrapRoot.Text = $selectedRoot
+                $suggestedName = $selectedDirectory.Name
                 if ([string]::IsNullOrWhiteSpace($txtBootstrapName.Text)) {
-                    $suggestedName = (Get-Item -LiteralPath $folderDialog.SelectedPath).Name
                     if ($suggestedName) { $txtBootstrapName.Text = $suggestedName }
+                }
+                $defaultRepo = [string]$tabState.BootstrapDefaults.Repo
+                $defaultRoot = [string]$tabState.BootstrapDefaults.Root
+                $currentRepo = $txtBootstrapRepo.Text.Trim().TrimEnd('/')
+                if ($suggestedName -and $defaultRepo -and $currentRepo -eq $defaultRepo -and $defaultRoot -and
+                    (Test-Path -LiteralPath $defaultRoot -PathType Container)) {
+                    $resolvedDefaultRoot = (Resolve-Path -LiteralPath $defaultRoot).Path
+                    if ($selectedRoot -ine $resolvedDefaultRoot) {
+                        $ownerMatch = [regex]::Match($defaultRepo, '^([^/]+)/[^/]+$')
+                        $repoName = [regex]::Replace($suggestedName, '^[.]+', '')
+                        $repoName = [regex]::Replace($repoName, '[^A-Za-z0-9_.-]+', '-').Trim([char[]]@('-', '.'))
+                        if ($ownerMatch.Success -and $repoName) {
+                            $txtBootstrapRepo.Text = $ownerMatch.Groups[1].Value + '/' + $repoName
+                        }
+                    }
                 }
             }
         } catch {
@@ -1196,7 +1288,7 @@ function New-JobTab {
             LoadRuns = $btnLoadRuns; PublishRun = $btnPubRun; Undraft = $btnUndraft; ReleasePage = $btnRelPage
             MakePublic = $btnMakePublic; MakePrivate = $btnMakePrivate; Task = $btnTask
             GitAdd = $btnGitAdd; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush
-            AddApp = $btnBootstrapAddApp; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
+            AddApp = $btnBootstrapAddApp; CreateRepo = $btnBootstrapCreateRepo; ActionsSecrets = $btnBootstrapActionsSecrets; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
         }
     }
     $page.Tag = $tabState

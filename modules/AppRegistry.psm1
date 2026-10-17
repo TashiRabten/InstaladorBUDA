@@ -69,13 +69,19 @@ class BudaAppRegistry {
             throw 'The updated app registry did not validate with the new entry.'
         }
 
-        $tempPath = Join-Path (Split-Path -Parent $this.Path) ('.apps.json.' + [guid]::NewGuid().ToString('N') + '.tmp')
+        $fileToken = [guid]::NewGuid().ToString('N')
+        $registryDir = Split-Path -Parent $this.Path
+        $tempPath = Join-Path $registryDir ('.apps.json.' + $fileToken + '.tmp')
+        $backupPath = Join-Path $registryDir ('.apps.json.' + $fileToken + '.bak')
         $utf8 = New-Object System.Text.UTF8Encoding($false)
         try {
             [System.IO.File]::WriteAllText($tempPath, $updated, $utf8)
-            [System.IO.File]::Replace($tempPath, $this.Path, $null)
+            # .NET Framework rejects a null backup filename; provide a same-directory
+            # backup so Replace remains atomic on the packaged EXE's runtime.
+            [System.IO.File]::Replace($tempPath, $this.Path, $backupPath)
         } finally {
             if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue }
         }
         $this.Load()
         return $this.Get([string]$app.name)

@@ -182,7 +182,7 @@ function Invoke-CockpitCli {
     }
 
     $bootstrapCommands = @('bootstrap-plan', 'bootstrap-prepare', 'bootstrap-publish')
-    $waitForJob = ($request.command -eq 'action' -and $request.action -ne 'update') -or ($request.command -in $bootstrapCommands)
+    $waitForJob = ($request.command -eq 'action' -and $request.action -notin @('update','actions-secrets')) -or ($request.command -in $bootstrapCommands)
     if ($request.waitMs -gt 0 -and $waitForJob -and $response.ok -and $response.data.tabId) {
         $tabId = $response.data.tabId
         $deadline = [datetime]::UtcNow.AddMilliseconds([Math]::Min([int]$request.waitMs, 3600000))

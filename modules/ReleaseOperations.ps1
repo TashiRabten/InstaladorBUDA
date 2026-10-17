@@ -490,10 +490,18 @@ function Build-UndraftCommands {
 
 function Get-GitBranch {
     param($app)
-    $b = & git -C $app.repoRoot rev-parse --abbrev-ref HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $b -and "$b".Trim() -ne 'HEAD') { return "$b".Trim() }
-    $b = & git -C $app.repoRoot symbolic-ref --quiet --short HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $b) { return "$b".Trim() }
+    if (-not $app -or [string]::IsNullOrWhiteSpace([string]$app.repoRoot)) { return $null }
+    $repoRoot = [string]$app.repoRoot
+    if (-not (Test-Path -LiteralPath $repoRoot -PathType Container)) { return $null }
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot '.git'))) { return $null }
+    try {
+        $b = & git -C $repoRoot rev-parse --abbrev-ref HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $b -and "$b".Trim() -ne 'HEAD') { return "$b".Trim() }
+        $b = & git -C $repoRoot symbolic-ref --quiet --short HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $b) { return "$b".Trim() }
+    } catch {
+        return $null
+    }
     return $null
 }
 
