@@ -25,9 +25,22 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src  = Join-Path $here 'InstaladorBUDA.ps1'
+$bootstrapModule = Join-Path $here 'modules\GitBootstrap.ps1'
 $out  = Join-Path $here 'InstaladorBUDA.exe'
 
 if (-not (Test-Path $src)) { throw "InstaladorBUDA.ps1 not found next to this script ($src)." }
+if (-not (Test-Path $bootstrapModule)) { throw "Git bootstrap module not found: $bootstrapModule" }
+
+# The source stays split for editing. Compile one temporary script so the shipped EXE
+# still needs only apps.json beside it.
+$sourceText = [IO.File]::ReadAllText($src)
+$marker = '#__GIT_BOOTSTRAP_MODULE__'
+if ([regex]::Matches($sourceText, [regex]::Escape($marker)).Count -ne 1) {
+    throw "Expected exactly one $marker marker in InstaladorBUDA.ps1."
+}
+$moduleText = [IO.File]::ReadAllText($bootstrapModule)
+$bundledSource = $sourceText.Replace($marker, $moduleText)
+$bundledInput = Join-Path $env:TEMP ("InstaladorBUDA-bundle-" + [guid]::NewGuid().ToString('N') + '.ps1')
 
 # Default icon: the shared pramana.ico next to this script, if present.
 if (-not $Icon) {
@@ -65,10 +78,12 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 }
 Import-Module ps2exe
 
+[IO.File]::WriteAllText($bundledInput, $bundledSource, [System.Text.UTF8Encoding]::new($false))
+
 $opts = @{
-    InputFile   = $src
+    InputFile   = $bundledInput
     OutputFile  = $out
-    noConsole   = $true          # GUI app — no console window
+    noConsole   = $false         # CLI output needs inherited standard handles; the GUI hides its console at startup
     STA         = $true          # WinForms needs a single-threaded apartment
     DPIAware    = $true          # sharp text on a scaled display (125% / 150%). The GUI sizes
                                  # itself for the real DPI (Px in InstaladorBUDA.ps1), so
@@ -83,7 +98,11 @@ if ($Icon -and (Test-Path $Icon)) { $opts.iconFile = $Icon; Write-Host "Icon: $I
 
 $start = Get-Date
 Write-Host "Compiling -> $out" -ForegroundColor Cyan
-Invoke-ps2exe @opts
+try {
+    Invoke-ps2exe @opts
+} finally {
+    Remove-Item -LiteralPath $bundledInput -ErrorAction SilentlyContinue
+}
 
 # Verify a FRESH exe was actually produced — ps2exe prints a success banner even when the
 # delete-then-write failed and only a stale exe remains, so check the write time.

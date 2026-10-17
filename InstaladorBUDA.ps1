@@ -61,6 +61,59 @@ $script:ReleaseVersionCache = @{}
 
 $script:ControlPipeName = 'InstaladorBUDA.Control.v1'
 
+if ($script:SelfPath) {
+    . (Join-Path $AppDir 'modules\GitBootstrap.ps1')
+} else {
+    #__GIT_BOOTSTRAP_MODULE__
+}
+
+function Initialize-ConsoleNative {
+    if (-not ('InstaladorBudaConsoleNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class InstaladorBudaConsoleNative {
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint processId);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AllocConsole();
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetStdHandle(int standardHandle);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetStdHandle(int standardHandle, IntPtr handle);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool ShowWindow(IntPtr window, int command);
+}
+'@
+    }
+}
+
+function Initialize-CliConsole {
+    if ($script:SelfPath) { return }
+    try {
+        Initialize-ConsoleNative
+        $stdout = [InstaladorBudaConsoleNative]::GetStdHandle(-11)
+        $stderr = [InstaladorBudaConsoleNative]::GetStdHandle(-12)
+        if ([InstaladorBudaConsoleNative]::GetConsoleWindow() -eq [IntPtr]::Zero) {
+            if (-not [InstaladorBudaConsoleNative]::AttachConsole([uint32]::MaxValue)) { [void][InstaladorBudaConsoleNative]::AllocConsole() }
+        }
+        if ($stdout -and $stdout -ne [IntPtr]::Zero -and $stdout.ToInt64() -ne -1) { [void][InstaladorBudaConsoleNative]::SetStdHandle(-11, $stdout) }
+        if ($stderr -and $stderr -ne [IntPtr]::Zero -and $stderr.ToInt64() -ne -1) { [void][InstaladorBudaConsoleNative]::SetStdHandle(-12, $stderr) }
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        $outWriter = [System.IO.StreamWriter]::new([Console]::OpenStandardOutput(), $utf8NoBom)
+        $outWriter.AutoFlush = $true
+        [Console]::SetOut($outWriter)
+        $errorWriter = [System.IO.StreamWriter]::new([Console]::OpenStandardError(), $utf8NoBom)
+        $errorWriter.AutoFlush = $true
+        [Console]::SetError($errorWriter)
+    } catch { }
+}
+
+function Hide-GeneratedConsole {
+    if ($script:SelfPath) { return }
+    try {
+        Initialize-ConsoleNative
+        $window = [InstaladorBudaConsoleNative]::GetConsoleWindow()
+        if ($window -ne [IntPtr]::Zero) { [void][InstaladorBudaConsoleNative]::ShowWindow($window, 0) }
+    } catch { }
+}
+
 function Send-CockpitPipeRequest {
     param([string]$Json, [int]$ConnectTimeoutMs = 2500)
     $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $script:ControlPipeName,
@@ -114,7 +167,9 @@ function Invoke-CockpitCli {
         }
     }
 
-    if ($request.waitMs -gt 0 -and $request.command -eq 'action' -and $request.action -ne 'update' -and $response.ok -and $response.data.tabId) {
+    $bootstrapCommands = @('bootstrap-plan', 'bootstrap-prepare', 'bootstrap-publish')
+    $waitForJob = ($request.command -eq 'action' -and $request.action -ne 'update') -or ($request.command -in $bootstrapCommands)
+    if ($request.waitMs -gt 0 -and $waitForJob -and $response.ok -and $response.data.tabId) {
         $tabId = $response.data.tabId
         $deadline = [datetime]::UtcNow.AddMilliseconds([Math]::Min([int]$request.waitMs, 3600000))
         do {
@@ -428,8 +483,9 @@ function Get-ReleasePlan {
     $tag = "$($app.tagPrefix)$version"
     $tagState = Get-GitTagState $app $tag
     $releaseRepo = if ($app.releaseRepo) { [string]$app.releaseRepo } else { [string]$ReleaseRepo }
-    $branch = (& git -C $repo rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
-    $head = (& git -C $repo rev-parse --short HEAD 2>$null | Select-Object -First 1)
+    $branch = Get-GitBranch $app
+    $head = & git -C $repo rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -ne 0) { $head = $null }
     $workingTree = @(& git -C $repo status --short --branch 2>$null)
     $dirtyPaths = @($workingTree | Where-Object { $_ -and $_ -notmatch '^## ' })
     $blockers = @()
@@ -625,6 +681,8 @@ function Build-UndraftCommands {
 function Get-GitBranch {
     param($app)
     $b = & git -C $app.repoRoot rev-parse --abbrev-ref HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $b -and "$b".Trim() -ne 'HEAD') { return "$b".Trim() }
+    $b = & git -C $app.repoRoot symbolic-ref --quiet --short HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $b) { return "$b".Trim() }
     return $null
 }
@@ -672,10 +730,11 @@ function Build-GitCommitCommands {
     )
 }
 
-# A plain push of the current branch to its upstream — never --force.
+# Push the current branch; set the upstream on the first push to an empty remote.
 function Build-GitPushCommands {
     param($app)
-    return @("git -C $(Quote-PS $app.repoRoot) push")
+    $repo = Quote-PS $app.repoRoot
+    return @("`$upstream = git -C $repo rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>`$null; if (`$LASTEXITCODE -eq 0) { git -C $repo push } else { git -C $repo push -u origin HEAD }")
 }
 
 # ── Update: rebuild this exe from the .ps1 and restart it ─────────────────────
@@ -1384,11 +1443,14 @@ function Invoke-CockpitRequest {
             ok = $true
             command = 'help'
             data = @{
-                commands = @('start','close','list','status','new-tab','select-tab','configure','release-plan','action')
+                commands = @('start','close','list','status','new-tab','select-tab','configure','release-plan','bootstrap-plan','bootstrap-prepare','bootstrap-publish','action')
                 actions = @('upload','deploy','retag-deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-commit','git-push','update')
                 parameters = @{
                     configure = @{ required = @(); optional = @('tab','target','version','publish','dryRun','notes','workflow','gitPaths','commitMessage','taskName') }
                     releasePlan = @{ required = @(); optional = @('tab','target','version') }
+                    bootstrapPlan = @{ required = @('repoRoot','githubRepo'); optional = @('tab','gitleaksPath','waitMs') }
+                    bootstrapPrepare = @{ required = @('repoRoot','githubRepo','confirm:true'); optional = @('tab','gitleaksPath','waitMs') }
+                    bootstrapPublish = @{ required = @('repoRoot','githubRepo','commitMessage','confirm:true'); optional = @('tab','gitleaksPath','waitMs') }
                     action = @{ required = @('action'); optional = @('tab','target','version','publish','dryRun','notes','bundles','models','runId','taskName','gitPaths','commitMessage','confirm','replaceExistingTag','waitMs') }
                 }
                 examples = @(
@@ -1417,6 +1479,35 @@ function Invoke-CockpitRequest {
         if (-not $app) { throw "Unknown target '$targetName'. Use list to see configured targets." }
         $requestedVersion = if (Test-CliProperty $Request 'version') { [string]$Request.version } else { '' }
         return (Get-ReleasePlan $app $requestedVersion)
+    }
+    if ($command -in @('bootstrap-plan', 'bootstrap-prepare', 'bootstrap-publish')) {
+        $page = Resolve-CliTab $GuiState $Request
+        $state = $page.Tag
+        $rawRoot = [string]$Request.repoRoot
+        if ([string]::IsNullOrWhiteSpace($rawRoot)) { throw 'repoRoot is required.' }
+        if (-not (Test-Path -LiteralPath $rawRoot -PathType Container)) { throw "Repository folder does not exist: $rawRoot" }
+        $repoRoot = (Resolve-Path -LiteralPath $rawRoot).Path
+        $githubRepo = ([string]$Request.githubRepo).Trim().TrimEnd('/')
+        if ($githubRepo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'githubRepo must be an owner/name pair, for example TashiRabten/ScanBUDA.' }
+        $phase = switch ($command) {
+            'bootstrap-plan' { 'plan' }
+            'bootstrap-prepare' { 'prepare' }
+            'bootstrap-publish' { 'publish' }
+        }
+        if ($phase -ne 'plan' -and -not $Request.confirm) { throw "$command changes the local Git repository or publishes it; pass confirm:true." }
+        $commitMessage = [string]$Request.commitMessage
+        if ($phase -eq 'publish' -and [string]::IsNullOrWhiteSpace($commitMessage)) { throw 'bootstrap-publish requires commitMessage.' }
+        $scanner = Resolve-GitBootstrapScanner ([string]$Request.gitleaksPath) $AppDir
+        $commands = Build-GitBootstrapCommands $repoRoot $githubRepo $phase $commitMessage $scanner
+        if (-not $state.StartJob) { throw 'This cockpit tab cannot start a repository bootstrap job.' }
+        if ($state.IsRunning) { throw 'This cockpit tab already has a running job; choose an idle tab for bootstrap.' }
+        $label = "GitHub repository $phase ($githubRepo)"
+        $state.CliConfirmed = $phase -ne 'plan'
+        try {
+            $startJob = $state.StartJob
+            & $startJob $commands $label $true $repoRoot $null $null ($phase -eq 'plan')
+        } finally { $state.CliConfirmed = $false }
+        return [pscustomobject]@{ ok = $true; command = $command; data = @{ tabId = $state.Id; phase = $phase; repoRoot = $repoRoot; githubRepo = $githubRepo; running = [bool]$state.IsRunning } }
     }
     if ($command -eq 'close') {
         if (-not $Request.confirm) { throw 'close requires confirm:true.' }
@@ -2333,6 +2424,7 @@ function New-JobTab {
         }.GetNewClosure())
         $job.Timer.Start()
     }.GetNewClosure()
+    $tabState.StartJob = $run
 
     # Best-effort: if the whole app is closed while this tab's job is still running,
     # kill the child process rather than leaving it orphaned in the background.
@@ -2604,8 +2696,9 @@ function New-JobTab {
 }
 
 # ── Entry point ──────────────────────────────────────────────────────────────
-if ($Cli) { Invoke-CockpitCli -Json $Cli; return }
+if ($Cli) { Initialize-CliConsole; Invoke-CockpitCli -Json $Cli; return }
 if ($Console) { Show-ConsoleMenu; return }
+Hide-GeneratedConsole
 try {
     Show-Gui
 } catch {

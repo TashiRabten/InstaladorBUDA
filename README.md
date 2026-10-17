@@ -34,6 +34,9 @@ When the script changes, rebuild/restart the executable before using new CLI com
 an already-open executable keeps its original embedded script. The cockpit's **Update**
 button performs that rebuild and warns if running jobs would be stopped.
 
+The source keeps first-push Git bootstrap logic in `modules/GitBootstrap.ps1`. The build
+bundles it into the executable, so the distributed `.exe` still needs only `apps.json`.
+
 ### Control the visible cockpit from the CLI
 
 The GUI exposes a local, current-user-only named pipe. CLI requests are applied to the
@@ -107,6 +110,27 @@ For example, stage, commit, and push selected files through the same Git panel c
 & .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-commit","confirm":true,"waitMs":30000}'
 & .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-push","confirm":true,"waitMs":30000}'
 ```
+
+To initialize a local project against an existing, empty GitHub repository, use the
+bootstrap preflight, prepare, and publish commands. Preflight is read-only. Prepare sets
+the branch to `main`, configures `origin`, scans and stages files; inspect the visible
+staged-path list before publishing. Publish commits as your configured Git identity and
+pushes `main` to `origin`. A successful prepare records the staged tree in `.git`, and
+publish stops if that tree or the working files changed afterward:
+
+```powershell
+$base = @{ repoRoot = 'C:\path\to\project'; githubRepo = 'owner/repository'; waitMs = 30000 }
+$plan = $base + @{ command = 'bootstrap-plan' }
+& .\InstaladorBUDA.exe -Cli ($plan | ConvertTo-Json -Compress)
+$prepare = $base + @{ command = 'bootstrap-prepare'; confirm = $true }
+& .\InstaladorBUDA.exe -Cli ($prepare | ConvertTo-Json -Compress)
+$publish = $base + @{ command = 'bootstrap-publish'; commitMessage = 'Initial project commit'; confirm = $true }
+& .\InstaladorBUDA.exe -Cli ($publish | ConvertTo-Json -Compress)
+```
+
+Bootstrap requires `git`, authenticated `gh`, a configured Git author name and email, an
+empty GitHub remote, and Gitleaks. Gitleaks is found on `PATH` or in a sibling
+`gitleaks_*_windows_*` folder; pass `gitleaksPath` to select another executable.
 
 **Prerequisites:** [`git`](https://git-scm.com/) and the
 [GitHub CLI `gh`](https://cli.github.com/) on `PATH`, with `gh auth login` done once.
