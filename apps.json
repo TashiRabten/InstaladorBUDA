@@ -10,6 +10,7 @@
       "workflow": "build-app-installers.yml",
       "releaseBranch": "tradutor-buda",
       "versionFromGitTag": "tradutor-buda-v*",
+      "versionFromReleaseTag": true,
       "uploadScript": null,
       "models": [],
       "dispatchInputs": [

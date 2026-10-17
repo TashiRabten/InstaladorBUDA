@@ -42,6 +42,7 @@ job status, and output remain visible in the cockpit. Start it from a terminal:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"start"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"help"}'
 & .\InstaladorBUDA.exe -Cli '{"command":"list"}'
 & .\InstaladorBUDA.exe -Cli '{"command":"status"}'
 ```
@@ -66,11 +67,33 @@ call. Bundle IDs/names and model IDs are available from `list`; omit `bundles` t
 configured defaults, or pass `"all"`. `waitMs` waits for the tab's job to finish and returns
 its final status/log tail.
 
+`help` returns the parameter schemas and examples. `release-plan` is a read-only preflight:
+it reports the published version, suggested next version, selected tag, branch and HEAD,
+working-tree state, and any existing-tag blockers. You can pass `target`, `tab`, and an
+optional `version`; with no target it uses the selected tab's target:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"release-plan","target":"TradutorBUDA"}'
+```
+
+TradutorBUDA's suggested version comes from the newest published release tag, with local
+tags as a fallback when no release is available. Deploy checks the local tag, remote tag,
+and GitHub release before creating a tag, and stops if that version is already present.
+Use `dispatch` to rerun a workflow without moving a tag. Only when you intentionally need
+to move an existing remote tag, use the separate `retag-deploy` action with both explicit
+flags; it uses a lease against the remote tag object so it will stop if someone changes the
+tag after the preflight:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}'
+```
+
 Available actions mirror the cockpit: `upload`, `deploy`, `dispatch`, `load-runs`,
-`publish-run` (with `runId`), `undraft`, `make-public`, `make-private`, `open-actions`,
+`retag-deploy` (with `replaceExistingTag:true`), `publish-run` (with `runId`), `undraft`,
+`make-public`, `make-private`, `open-actions`,
 `open-release`, `copy-command`, `task` (with `taskName`), `git-status`, `git-add`,
 `git-commit`, `git-push`, and `update`. Actions that change a repository or publish work
-(`upload`, `deploy`, `dispatch`, `publish-run`, `undraft`, visibility changes, `git-add`,
+(`upload`, `deploy`, `retag-deploy`, `dispatch`, `publish-run`, `undraft`, visibility changes, `git-add`,
 `git-commit`, `git-push`, and `task`) require `"confirm":true`. Set `dryRun:true` to show
 commands in the visible log without running them. CLI output is one JSON response per
 command; failures return a nonzero exit code. If the GUI is closed, commands other than
@@ -108,7 +131,7 @@ Three actions, in order:
 | Action | What it does | When |
 |---|---|---|
 | **Upload models** | Zips large model files and uploads them to a `*-models-*` release (assets too big for git). | Once per app, and again only when a model changes. |
-| **Deploy (push tag)** | `git tag <prefix><version>` + `git push` → the app's build workflow fires. Desktop targets publish installers and a release; a `container-image` target publishes its image and reports the Flux handoff. Also updates your local git tags, so the next "current version" is correct. | Releases; for SegBUDA, also supports one selected bundle. |
+| **Deploy (push tag)** | Checks the local tag, remote tag, and release first, then creates a new tag and pushes it → the app's build workflow fires. It stops if the version already exists. Desktop targets publish installers and a release; a `container-image` target publishes its image and reports the Flux handoff. | New releases; for SegBUDA, also supports one selected bundle. |
 | **Trigger workflow** | `gh workflow run …` with the configured inputs, dispatched directly (no local `git tag`/`git push`). Desktop targets can publish a GitHub Release; a `container-image` target always publishes the image. A dispatched version does not update local tags. | Test/manual builds, or re-runs. |
 
 Current desktop and daemon targets:
@@ -123,6 +146,11 @@ Current desktop and daemon targets:
 **Typical desktop release:** open InstaladorBUDA → pick the app → the version pre-fills (current +1)
 → **Upload models** only if a model changed → **Deploy (push tag)** → watch the build in the
 tab's log. When it ends, the log shows the release and its files. Done.
+
+If the selected version already has a tag or release, use `release-plan` to see the collision
+and choose a new version. To rerun work for an existing version, use **Trigger workflow**;
+`retag-deploy` is reserved for an intentional move of an existing tag and requires both
+`replaceExistingTag:true` and `confirm:true`.
 
 For **Namsel Kubernetes release**, use the versioned tag flow. The workflow writes the
 tag's version into `docker/version.properties` before building the image. Flux's
@@ -319,6 +347,7 @@ you can see the update took effect. The button is off when `build-exe.ps1` is no
 | `releaseRepo` | — | Repo that hosts this app's **releases**. Omit for BUDA apps (defaults to `releaseRepoDefault` = `TashiRabten/GlossarioBUDA`); set it to the app's own `owner/repo` for standalone apps that publish to themselves. Used by *Publish from run* / *Un-draft*. |
 | `versionFile` + `versionRegex` | one of these¹ | Read current version from a file (capture group 1). |
 | `versionFromGitTag` | one of these¹ | Or read the highest existing tag matching this glob. |
+| `versionFromReleaseTag` | one of these¹ | Read the highest published, non-draft release tag matching `tagPrefix`; use the matching Git tag setting as a fallback. |
 | `uploadScript` | — | A `.ps1` (relative to `repoRoot`) that uploads the models. Preferred if present. |
 | `models` | — | Declarative assets to zip+upload when there is no `uploadScript`. |
 | `uploadModels` | — | Per-model checklist shown before running `uploadScript` (checkboxes in the GUI, numbered prompt in `-Console`); passes the checked names as `-Models 'a','b',...`. Missing-on-this-machine folders are flagged and start unchecked. Omit to just run `uploadScript` with no args. |

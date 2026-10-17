@@ -57,6 +57,7 @@ $Apps   = @($Config.apps)
 $Tasks  = @($Config.tasks)
 $ReleaseRepo = if ($Config.releaseRepoDefault) { $Config.releaseRepoDefault } else { 'TashiRabten/GlossarioBUDA' }
 $ActionsUrl  = if ($Config.actionsUrl) { $Config.actionsUrl } else { 'https://github.com/TashiRabten/TradutorBUDA/actions' }
+$script:ReleaseVersionCache = @{}
 
 $script:ControlPipeName = 'InstaladorBUDA.Control.v1'
 
@@ -132,6 +133,41 @@ function Invoke-CockpitCli {
 function Get-App { param([string]$Name) $Apps | Where-Object { $_.name -eq $Name } | Select-Object -First 1 }
 
 # ── Version helpers ──────────────────────────────────────────────────────────
+function Get-LatestPublishedVersion {
+    param($app)
+    if (-not $app.tagPrefix) { return $null }
+    $releaseRepo = if ($app.releaseRepo) { [string]$app.releaseRepo } else { [string]$ReleaseRepo }
+    $cacheKey = "$releaseRepo|$($app.tagPrefix)"
+    if ($script:ReleaseVersionCache.ContainsKey($cacheKey)) {
+        $cached = $script:ReleaseVersionCache[$cacheKey]
+        if ([DateTime]::UtcNow - $cached.CheckedAt -lt [TimeSpan]::FromMinutes(2)) { return $cached.Version }
+    }
+
+    $latestText = $null
+    $latestVersion = $null
+    $lookupError = $null
+    try {
+        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI is unavailable.' }
+        $raw = & gh release list --repo $releaseRepo --limit 100 --json tagName,isDraft,isPrerelease 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { throw 'Could not read published releases.' }
+        $releases = @((($raw -join "`n") | ConvertFrom-Json))
+        foreach ($release in $releases) {
+            if ($release.isDraft -or $release.isPrerelease) { continue }
+            $tag = [string]$release.tagName
+            if (-not $tag.StartsWith([string]$app.tagPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $candidate = $tag.Substring(([string]$app.tagPrefix).Length)
+            try { $parsed = [version]$candidate } catch { continue }
+            if (-not $latestVersion -or $parsed -gt $latestVersion) {
+                $latestVersion = $parsed
+                $latestText = $candidate
+            }
+        }
+    } catch { $lookupError = $_.Exception.Message }
+
+    $script:ReleaseVersionCache[$cacheKey] = @{ Version = $latestText; CheckedAt = [DateTime]::UtcNow; Error = $lookupError }
+    return $latestText
+}
+
 function Get-CurrentVersion {
     param($app)
     try {
@@ -141,6 +177,10 @@ function Get-CurrentVersion {
                 $txt = Get-Content $f -Raw
                 if ($app.versionRegex -and $txt -match $app.versionRegex) { return $Matches[1] }
             }
+        }
+        if ($app.versionFromReleaseTag) {
+            $published = Get-LatestPublishedVersion $app
+            if ($published) { return $published }
         }
         if ($app.versionFromGitTag) {
             $tags = & git -C $app.repoRoot tag --list $app.versionFromGitTag 2>$null
@@ -276,13 +316,23 @@ function Resolve-BundleSelection {
 }
 
 function Build-TagCommands {
-    param($app, [string]$Version, [string]$ReleaseNotes = '', [string]$Bundles = 'all')
+    param($app, [string]$Version, [string]$ReleaseNotes = '', [string]$Bundles = 'all', [bool]$ReplaceExistingTag = $false)
     $repo = $app.repoRoot
     $tag  = "$($app.tagPrefix)$Version"
+    $tagState = Get-GitTagState $app $tag
+    if ($app.outputKind -eq 'container-image' -and $ReplaceExistingTag) {
+        throw 'Container image tags are immutable; use workflow dispatch to retry a build.'
+    }
+    if ($ReplaceExistingTag -and -not $tagState.RemoteTagExists) {
+        throw "Remote tag $tag does not exist, so there is no existing tag to move."
+    }
+    if (-not $ReplaceExistingTag -and ($tagState.LocalTagExists -or $tagState.RemoteTagExists -or $tagState.ReleaseExists)) {
+        throw "Tag or release $tag already exists. Choose a new version, or explicitly use retag-deploy with replaceExistingTag:true and confirm:true."
+    }
+    $tagOption = if ($ReplaceExistingTag) { '-f ' } else { '' }
+    $pushOption = if ($ReplaceExistingTag) { "--force-with-lease=refs/tags/${tag}:$($tagState.RemoteTagObject) " } else { '' }
     if ($app.outputKind -eq 'container-image') {
-        # Image tags are immutable release identifiers. Never move an existing image tag;
-        # use the workflow-dispatch action to retry a failed image build instead.
-        return @("git -C `"$repo`" tag $tag", "git -C `"$repo`" push origin $tag")
+        return @("git -C `"$repo`" tag $tag", "git -C `"$repo`" push origin refs/tags/$tag")
     }
     # A tag push carries no workflow inputs, so a bundle subset rides in the annotated tag
     # message as a "Bundles: <ids>" line. build-segbuda.yml's manifest job reads it (and
@@ -291,13 +341,9 @@ function Build-TagCommands {
         $body = $ReleaseNotes.TrimEnd()
         $ReleaseNotes = if ($body) { "$body`n`nBundles: $Bundles" } else { "Bundles: $Bundles" }
     }
-    # Use -f / --force so re-deploying an existing version MOVES the tag to the new
-    # commit instead of failing ("tag already exists"). Re-pushing a moved tag also
-    # re-triggers the build workflow — the intended behaviour when a prior release
-    # build failed (e.g. on the Actions storage quota) and you want to rebuild it.
     if ([string]::IsNullOrWhiteSpace($ReleaseNotes)) {
         # No note → lightweight tag; the build workflow uses its default release message.
-        return @("git -C `"$repo`" tag -f $tag", "git -C `"$repo`" push --force origin $tag")
+        return @("git -C `"$repo`" tag $tagOption$tag", "git -C `"$repo`" push $pushOption origin refs/tags/$tag")
     }
     # Note provided → ANNOTATED tag carrying the note as its message. The build
     # workflow reads the tag message on a tag push and uses it as the GitHub Release
@@ -307,10 +353,129 @@ function Build-TagCommands {
     $tmp = '$env:TEMP\instaladorbuda-relnote.txt'
     return @(
         "[IO.File]::WriteAllText(`"$tmp`", [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64')))",
-        "git -C `"$repo`" tag -f -a $tag -F `"$tmp`"",
-        "git -C `"$repo`" push --force origin $tag",
+        "git -C `"$repo`" tag $tagOption-a $tag -F `"$tmp`"",
+        "git -C `"$repo`" push $pushOption origin refs/tags/$tag",
         "Remove-Item `"$tmp`" -ErrorAction SilentlyContinue"
     )
+}
+
+function Get-GitTagState {
+    param($app, [string]$Tag)
+    $repo = [string]$app.repoRoot
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git is unavailable; cannot check whether the release tag already exists.' }
+    & git -C $repo show-ref --verify --quiet "refs/tags/$Tag" 2>$null
+    $localExists = $LASTEXITCODE -eq 0
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $remoteLines = @(& git -C $repo ls-remote --refs --tags origin "refs/tags/$Tag" 2>&1)
+        $remoteExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousErrorActionPreference }
+    if ($remoteExit -ne 0) { throw "Could not check remote tag $Tag. Check the origin remote and network, then retry." }
+    $remoteExists = $remoteLines.Count -gt 0
+    $remoteObject = $null
+    if ($remoteExists) { $remoteObject = ([string]$remoteLines[0] -split '\s+')[0] }
+
+    $releaseExists = $false
+    if ($app.outputKind -ne 'container-image') {
+        $releaseRepo = if ($app.releaseRepo) { [string]$app.releaseRepo } else { [string]$ReleaseRepo }
+        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI is unavailable; cannot verify whether a release already exists.' }
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $releaseOutput = @(& gh release view $Tag --repo $releaseRepo --json tagName 2>&1)
+            $releaseExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $previousErrorActionPreference }
+        if ($releaseExit -eq 0) {
+            $releaseExists = $true
+        } else {
+            $releaseError = $releaseOutput -join "`n"
+            if ($releaseError -match '(?i)(release not found|not found \(HTTP 404\)|HTTP 404)') {
+                $releaseExists = $false
+            } else {
+                throw "Could not check release $Tag in $releaseRepo. $releaseError"
+            }
+        }
+    }
+    return [pscustomobject]@{
+        LocalTagExists = $localExists
+        RemoteTagExists = $remoteExists
+        RemoteTagObject = $remoteObject
+        ReleaseExists = $releaseExists
+    }
+}
+
+function Get-ReleasePlan {
+    param($app, [string]$RequestedVersion = '')
+    $repo = [string]$app.repoRoot
+    if ([string]::IsNullOrWhiteSpace([string]$app.tagPrefix)) { throw "$($app.name) has no release tag prefix configured." }
+    $latest = $null
+    $versionSource = 'default'
+    $releaseLookupError = $null
+    if ($app.versionFromReleaseTag) {
+        $latest = Get-LatestPublishedVersion $app
+        $releaseRepoForVersion = if ($app.releaseRepo) { [string]$app.releaseRepo } else { [string]$ReleaseRepo }
+        $cacheKey = "$releaseRepoForVersion|$($app.tagPrefix)"
+        if ($script:ReleaseVersionCache.ContainsKey($cacheKey)) { $releaseLookupError = $script:ReleaseVersionCache[$cacheKey].Error }
+        if ($latest) { $versionSource = 'published-release' }
+    }
+    if (-not $latest) {
+        $latest = Get-CurrentVersion $app
+        $versionSource = if ($app.versionFromGitTag) { 'local-tag' } else { 'default' }
+    }
+    $suggested = Get-NextVersion $latest
+    $version = if ([string]::IsNullOrWhiteSpace($RequestedVersion)) { $suggested } else { $RequestedVersion.Trim() }
+    $tag = "$($app.tagPrefix)$version"
+    $tagState = Get-GitTagState $app $tag
+    $releaseRepo = if ($app.releaseRepo) { [string]$app.releaseRepo } else { [string]$ReleaseRepo }
+    $branch = (& git -C $repo rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
+    $head = (& git -C $repo rev-parse --short HEAD 2>$null | Select-Object -First 1)
+    $workingTree = @(& git -C $repo status --short --branch 2>$null)
+    $dirtyPaths = @($workingTree | Where-Object { $_ -and $_ -notmatch '^## ' })
+    $blockers = @()
+    $warnings = @()
+    if ($releaseLookupError) { $warnings += "Published release lookup failed; using the local version source. $releaseLookupError" }
+    if ($tagState.LocalTagExists) { $blockers += "Local tag $tag already exists." }
+    if ($tagState.RemoteTagExists) { $blockers += "Remote tag $tag already exists." }
+    if ($tagState.ReleaseExists) { $blockers += "GitHub release $tag already exists." }
+    if ($dirtyPaths.Count -gt 0) { $warnings += "Working tree has $($dirtyPaths.Count) changed or untracked path(s); the tag will point at HEAD only." }
+    if ($branch -eq 'HEAD') { $warnings += 'Repository is on a detached HEAD.' }
+    $release = $null
+    if ($app.outputKind -ne 'container-image') {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $json = @(& gh release view $tag --repo $releaseRepo --json tagName,isDraft,isPrerelease,publishedAt 2>&1)
+            $releaseExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $previousErrorActionPreference }
+        if ($releaseExit -eq 0 -and $json) { try { $release = (($json -join "`n") | ConvertFrom-Json) } catch { } }
+    }
+    return [pscustomobject]@{
+        ok = $true
+        command = 'release-plan'
+        data = @{
+            target = $app.name
+            repoRoot = $repo
+            releaseRepo = $releaseRepo
+            workflow = $app.workflow
+            latestPublishedVersion = $latest
+            versionSource = $versionSource
+            suggestedVersion = $suggested
+            requestedVersion = $version
+            tag = $tag
+            canDeployWithoutMovingTag = ($blockers.Count -eq 0)
+            blockers = $blockers
+            warnings = $warnings
+            branch = [string]$branch
+            head = [string]$head
+            workingTree = $workingTree
+            workingTreeClean = ($dirtyPaths.Count -eq 0)
+            localTagExists = [bool]$tagState.LocalTagExists
+            remoteTagExists = [bool]$tagState.RemoteTagExists
+            releaseExists = [bool]$tagState.ReleaseExists
+            release = $release
+        }
+    }
 }
 
 # Wrap a value as a single PowerShell single-quoted token (doubling embedded quotes),
@@ -1215,7 +1380,29 @@ function Invoke-CockpitRequest {
     param($GuiState, $Request)
     $command = [string]$Request.command
     if ($command -eq 'help') {
-        return [pscustomobject]@{ ok = $true; command = 'help'; data = @{ commands = @('start','close','list','status','new-tab','select-tab','configure','action'); actions = @('upload','deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-commit','git-push','update'); pipe = $script:ControlPipeName; example = '{"command":"action","tab":1,"action":"dispatch","target":"SegBUDA","version":"1.0.18","bundles":["essential"],"notes":"Release notes","confirm":true,"waitMs":120000}' } }
+        return [pscustomobject]@{
+            ok = $true
+            command = 'help'
+            data = @{
+                commands = @('start','close','list','status','new-tab','select-tab','configure','release-plan','action')
+                actions = @('upload','deploy','retag-deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-commit','git-push','update')
+                parameters = @{
+                    configure = @{ required = @(); optional = @('tab','target','version','publish','dryRun','notes','workflow','gitPaths','commitMessage','taskName') }
+                    releasePlan = @{ required = @(); optional = @('tab','target','version') }
+                    action = @{ required = @('action'); optional = @('tab','target','version','publish','dryRun','notes','bundles','models','runId','taskName','gitPaths','commitMessage','confirm','replaceExistingTag','waitMs') }
+                }
+                examples = @(
+                    '{"command":"release-plan","target":"TradutorBUDA"}',
+                    '{"command":"action","tab":1,"action":"deploy","target":"TradutorBUDA","version":"1.8.2","notes":"Release notes","confirm":true,"waitMs":900000}',
+                    '{"command":"action","tab":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}'
+                )
+                safety = @{
+                    deploy = 'Rejects an existing local tag, remote tag, or GitHub release.'
+                    retagDeploy = 'Moves an existing remote tag only with replaceExistingTag:true and confirm:true; uses a remote-object lease.'
+                }
+                pipe = $script:ControlPipeName
+            }
+        }
     }
     if ($command -eq 'list') {
         $targets = @($Apps | ForEach-Object { [pscustomobject]@{ name = $_.name; repoRoot = $_.repoRoot; workflow = $_.workflow; tagPrefix = $_.tagPrefix; bundles = @($_.bundles); models = @($_.uploadModels | ForEach-Object { $_.name }) } })
@@ -1223,6 +1410,14 @@ function Invoke-CockpitRequest {
     }
     if ($command -eq 'status') { return (Get-CockpitStatus $GuiState $Request) }
     if ($command -eq 'start') { return (Get-CockpitStatus $GuiState $Request) }
+    if ($command -eq 'release-plan') {
+        $page = Resolve-CliTab $GuiState $Request
+        $targetName = if (Test-CliProperty $Request 'target') { [string]$Request.target } else { [string]$page.Tag.Controls.Target.SelectedItem }
+        $app = Get-App $targetName
+        if (-not $app) { throw "Unknown target '$targetName'. Use list to see configured targets." }
+        $requestedVersion = if (Test-CliProperty $Request 'version') { [string]$Request.version } else { '' }
+        return (Get-ReleasePlan $app $requestedVersion)
+    }
     if ($command -eq 'close') {
         if (-not $Request.confirm) { throw 'close requires confirm:true.' }
         $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
@@ -1291,7 +1486,12 @@ function Invoke-CockpitRequest {
         }
     }
     $app = Get-App ([string]$c.Target.SelectedItem)
-    $confirmationActions = @('upload','deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-commit','git-push','task')
+    $confirmationActions = @('upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-commit','git-push','task')
+    if ($actionName -eq 'retag-deploy') {
+        if (-not $Request.replaceExistingTag) { throw 'retag-deploy requires replaceExistingTag:true.' }
+        if (-not $Request.confirm) { throw 'retag-deploy requires confirm:true.' }
+        if ($app.outputKind -eq 'container-image') { throw 'Container image tags are immutable; use workflow dispatch to retry a build.' }
+    }
     if ($actionName -in $confirmationActions -and -not $c.DryRun.Checked -and -not $Request.confirm) {
         throw "$actionName requires confirm:true (or set dryRun:true to preview only)."
     }
@@ -1300,10 +1500,10 @@ function Invoke-CockpitRequest {
             $state.CliModels = @(Resolve-CliModels $app $Request.models)
             $button = $c.Buttons.Upload
         }
-        { $_ -in @('deploy','dispatch') } {
+        { $_ -in @('deploy','retag-deploy','dispatch') } {
             if (-not $c.Version.Text.Trim()) { throw 'Set version before deploy or dispatch.' }
             if ($app.bundles -and @($app.bundles).Count -gt 0) { $state.CliBundles = Resolve-CliBundles $app $Request.bundles }
-            $button = if ($actionName -eq 'deploy') { $c.Buttons.Deploy } else { $c.Buttons.Dispatch }
+            $button = if ($actionName -in @('deploy','retag-deploy')) { $c.Buttons.Deploy } else { $c.Buttons.Dispatch }
         }
         'load-runs' { $button = $c.Buttons.LoadRuns }
         'publish-run' {
@@ -1337,6 +1537,7 @@ function Invoke-CockpitRequest {
         default { throw "Unknown action '$actionName'. Use help for available actions." }
     }
     if (-not $button -or -not $button.Enabled) { throw "The '$actionName' control is unavailable for target $($app.name)." }
+    if ($actionName -eq 'retag-deploy') { $state.CliReplaceExistingTag = $true }
     if ($actionName -eq 'update') {
         # Reply over the pipe before closing the form; otherwise the CLI client sees a
         # broken connection instead of the acknowledgement for its update request.
@@ -1358,6 +1559,7 @@ function Invoke-CockpitRequest {
         $state.CliConfirmed = $false
         $state.CliModels = $null
         $state.CliBundles = $null
+        $state.CliReplaceExistingTag = $false
     }
     return [pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $state.Id; action = $actionName; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text; running = [bool]$state.IsRunning; dryRun = [bool]$c.DryRun.Checked } }
 }
@@ -1739,7 +1941,7 @@ function New-JobTab {
     $grpPub.Controls.AddRange(@($lblWf, $cmbWf, $btnLoadRuns, $lblRun, $cmbRun, $btnPubRun, $btnUndraft, $btnRelPage))
     $y += $boxH + $UI.BoxGap
     # Per-tab (not $script:) — concurrent tabs must not share which runs were loaded.
-    $tabState = @{ Id = $Number; LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null; CliModels = $null; CliBundles = $null; CliConfirmed = $false }
+    $tabState = @{ Id = $Number; LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null; CliModels = $null; CliBundles = $null; CliConfirmed = $false; CliReplaceExistingTag = $false }
 
     # ── Repo visibility (public/private toggle, e.g. to work around Actions minutes
     # running out on a private repo — flip public just to let a workflow run, then
@@ -2194,7 +2396,13 @@ function New-JobTab {
         $label = if ($isImageOnly) { "Publish $($app.name) image v$v (push tag)" }
                  elseif ($bundles -eq 'all') { "Deploy $($app.name) v$v (push tag)" }
                  else { "Deploy $($app.name) v$v (push tag, bundles: $bundles)" }
-        & $run (Build-TagCommands $app $v $notes $bundles) $label $false $app.repoRoot (Build-FollowUpLines $app 'push' $v $true)
+        try {
+            $replaceTag = [bool]$tabState.CliReplaceExistingTag
+            $commands = Build-TagCommands $app $v $notes $bundles $replaceTag
+            & $run $commands $label $false $app.repoRoot (Build-FollowUpLines $app 'push' $v $true)
+        } catch {
+            & $appendLog "Deploy preflight stopped: $($_.Exception.Message)"
+        }
     }.GetNewClosure())
     $btnDispatch.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
