@@ -23,13 +23,17 @@ function Show-Gui {
         ([Math]::Min((Px $UI.WindowHeight), $work.Height - 20)))
 
     $tabs = New-Object System.Windows.Forms.TabControl
+    $tabs.Appearance = [System.Windows.Forms.TabAppearance]::FlatButtons
+    $tabs.SizeMode = [System.Windows.Forms.TabSizeMode]::Fixed
+    $tabs.ItemSize = New-Object System.Drawing.Size((Px $UI.HiddenTabHeader), (Px $UI.HiddenTabHeader))
+    $tabs.Padding = New-Object System.Drawing.Point(0, 0)
     $tabs.Dock = 'Fill'
     $form.Controls.Add($tabs)
 
     # ── Top bar: Update (rebuild this exe from the .ps1, restart) ─────────────────
     # Added after the Fill tab control: WinForms docks the last-added control first, so the bar takes the top
     # edge and the tabs fill what is left. Sized before its right-anchored button is added (see the layout rules).
-    $guiState = [hashtable]::Synchronized(@{ CloseConfirmed = $false; CliConfirmed = $false; Stopping = $false; Form = $form })
+    $guiState = [hashtable]::Synchronized(@{ CloseConfirmed = $false; CliConfirmed = $false; Stopping = $false; Form = $form; SessionPickerSyncing = $false; JobCounter = 0 })
     $appDir = $AppDir
     $topBar = New-Object System.Windows.Forms.Panel
     $topBar.Dock = 'Top'
@@ -38,11 +42,12 @@ function Show-Gui {
     $btnUpdate.Text = 'Update (rebuild + restart)'; $btnUpdate.Font = $form.Font
     $updW = Get-ButtonWidth $btnUpdate 160
     $barW = $form.ClientSize.Width / (Get-UiScale)
-    Set-Box $btnUpdate ($barW - $UI.Pad - $updW) (($UI.TopBarH - $UI.BtnH) / 2) $updW $UI.BtnH
+    $topRowY = $UI.SessionRowY - $UI.RowPitch
+    Set-Box $btnUpdate ($barW - $UI.Pad - $updW) (($topRowY + $UI.RowH / 2) - ($UI.BtnH / 2)) $updW $UI.BtnH
     $btnUpdate.Anchor = 'Top,Right'
     $lblBuild = New-Object System.Windows.Forms.Label
     $lblBuild.ForeColor = [System.Drawing.Color]::Gray; $lblBuild.TextAlign = 'MiddleLeft'
-    Set-Box $lblBuild $UI.Pad (($UI.TopBarH - $UI.RowH) / 2) ($barW - 2 * $UI.Pad - $updW - $UI.BtnGap) $UI.RowH
+    Set-Box $lblBuild $UI.Pad $topRowY ($barW - 2 * $UI.Pad - $updW - $UI.BtnGap) $UI.RowH
     $lblBuild.Anchor = 'Top,Left,Right'
     # Which build is running, so an update can be seen to have taken effect.
     $exePath = Join-Path $appDir 'InstaladorBUDA.exe'
@@ -54,7 +59,24 @@ function Show-Gui {
         $btnUpdate.Enabled = $false
         $lblBuild.Text += '   (build-exe.ps1 not found next to it: Update is off)'
     }
-    $topBar.Controls.AddRange(@($lblBuild, $btnUpdate))
+    $lblSession = New-Object System.Windows.Forms.Label
+    $lblSession.Text = 'Session:'; $lblSession.TextAlign = 'MiddleLeft'
+    Set-Box $lblSession $UI.Pad $UI.SessionRowY $UI.SessionLabelW $UI.RowH
+    $cmbSession = New-Object System.Windows.Forms.ComboBox
+    $cmbSession.DropDownStyle = 'DropDownList'
+    $cmbSession.DisplayMember = 'Label'
+    Set-Field $cmbSession $form.Font ($UI.Pad + $UI.SessionLabelW + $UI.BtnGap / 2) $UI.SessionRowY $UI.SessionComboW
+    $cmbSession.Anchor = 'Top,Left,Right'
+    $btnNewSession = New-Object System.Windows.Forms.Button
+    $btnNewSession.Text = 'New session'; $btnNewSession.Font = $form.Font
+    $newSessionX = $UI.Pad + $UI.SessionLabelW + ($UI.BtnGap / 2) + $UI.SessionComboW + $UI.BtnGap
+    Set-Box $btnNewSession $newSessionX (($UI.SessionRowY + $UI.RowH / 2) - ($UI.BtnH / 2)) $UI.SessionNewW $UI.BtnH
+    $btnNewSession.Anchor = 'Top,Right'
+    $btnCloseSession = New-Object System.Windows.Forms.Button
+    $btnCloseSession.Text = 'Close session'; $btnCloseSession.Font = $form.Font
+    Set-Box $btnCloseSession ($newSessionX + $UI.SessionNewW + $UI.BtnGap) (($UI.SessionRowY + $UI.RowH / 2) - ($UI.BtnH / 2)) $UI.SessionCloseW $UI.BtnH
+    $btnCloseSession.Anchor = 'Top,Right'
+    $topBar.Controls.AddRange(@($lblBuild, $btnUpdate, $lblSession, $cmbSession, $btnNewSession, $btnCloseSession))
     $form.Controls.Add($topBar)
     $updateTips = New-Object System.Windows.Forms.ToolTip
     $updateTips.SetToolTip($btnUpdate, 'Closes this window, rebuilds InstaladorBUDA.exe from InstaladorBUDA.ps1 (build-exe.ps1) in a console, and opens the new exe.')
@@ -79,43 +101,69 @@ function Show-Gui {
         $form.Close()
     }.GetNewClosure())
 
-    # Create the tab strip's window handle before the first TabPages.Insert. On .NET
-    # Framework — the runtime the compiled exe runs on — Insert into a TabControl that has
-    # no handle yet adds the page as a child control but never as a tab: TabPages.Count
-    # stays 1, and the window opened blank on the lone "+" tab. .NET (pwsh 7) does not
-    # have this defect, which is why the .ps1 always looked fine. Reading .Handle creates
-    # the handle without showing the form, and it lives for the whole run, so every later
-    # "+" click inserts correctly too.
+    # Create the tab host's handle before adding pages. .NET Framework can otherwise add
+    # a page as a child control without registering it in TabPages.
     [void]$tabs.Handle
+    $guiState.Tabs = $tabs
+    $guiState.SessionPicker = $cmbSession
+    $tabs.Tag = $guiState
+    $guiState.SyncSessionPicker = {
+        if ($guiState.SessionPickerSyncing) { return }
+        $guiState.SessionPickerSyncing = $true
+        try {
+            $selectedPage = $tabs.SelectedTab
+            $cmbSession.BeginUpdate()
+            try {
+                $cmbSession.Items.Clear()
+                foreach ($sessionPage in @($tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.Id })) {
+                    $labelText = "#$($sessionPage.Tag.Id)  $($sessionPage.Text)"
+                    [void]$cmbSession.Items.Add([pscustomobject]@{ Label = $labelText; Page = $sessionPage })
+                }
+                for ($i = 0; $i -lt $cmbSession.Items.Count; $i++) {
+                    if ($cmbSession.Items[$i].Page -eq $selectedPage) { $cmbSession.SelectedIndex = $i; break }
+                }
+                if ($cmbSession.SelectedIndex -lt 0 -and $cmbSession.Items.Count -gt 0) { $cmbSession.SelectedIndex = 0 }
+            } finally { $cmbSession.EndUpdate() }
+        } finally { $guiState.SessionPickerSyncing = $false }
+    }.GetNewClosure()
+    $cmbSession.Add_SelectedIndexChanged({
+        if ($guiState.SessionPickerSyncing -or $cmbSession.SelectedIndex -lt 0) { return }
+        $selected = $cmbSession.SelectedItem
+        if ($selected -and $selected.Page -and $tabs.SelectedTab -ne $selected.Page) { $tabs.SelectedTab = $selected.Page }
+    }.GetNewClosure())
+    $tabs.Add_SelectedIndexChanged({ & $guiState.SyncSessionPicker }.GetNewClosure())
 
-    $addTab = New-Object System.Windows.Forms.TabPage
-    $addTab.Text = '+'
-    $tabs.TabPages.Add($addTab)
-
-    # Adds a new job tab (titled after its target app once New-JobTab has picked one),
-    # inserts it before the "+" tab, selects it, and returns it. Used both at startup and
-    # by the "+" tab handler below.
-    $jobCounter = 0
+    # A new cockpit session receives its own target, version, GitHub controls and log.
     $newJobTab = {
-        $script:jobCounter++
-        $page = New-JobTab -Tabs $tabs -Number $script:jobCounter
-        $insertAt = $tabs.TabPages.IndexOf($addTab)
-        $tabs.TabPages.Insert($insertAt, $page)
+        $guiState.JobCounter++
+        $page = New-JobTab -Tabs $tabs -Number $guiState.JobCounter
+        $tabs.TabPages.Add($page)
         $tabs.SelectedTab = $page
+        & $guiState.SyncSessionPicker
         return $page
     }.GetNewClosure()
-    $guiState.Tabs = $tabs
     $guiState.NewJobTab = $newJobTab
+    $guiState.NewSessionButton = $btnNewSession
+    $guiState.CloseSessionButton = $btnCloseSession
     $guiState.UpdateButton = $btnUpdate
-    $script:jobCounter = 0
-
-    $suppressAddTabReentry = $false
-    $tabs.Add_Selected({
-        param($s, $e)
-        if ($e.TabPage -eq $addTab -and -not $suppressAddTabReentry) {
-            $script:suppressAddTabReentry = $true
-            try { & $newJobTab | Out-Null } finally { $script:suppressAddTabReentry = $false }
+    $btnNewSession.Add_Click({ & $newJobTab | Out-Null }.GetNewClosure())
+    $btnCloseSession.Add_Click({
+        $currentPage = $tabs.SelectedTab
+        if (-not $currentPage -or -not $currentPage.Tag) { return }
+        if ($tabs.TabPages.Count -le 1) {
+            [void][System.Windows.Forms.MessageBox]::Show('Keep at least one session open.', 'Close session', 'OK', 'Information')
+            return
         }
+        $currentName = [string]$currentPage.Text
+        $question = "Close $currentName? Its session log will be discarded."
+        if ($currentPage.Tag.IsRunning) { $question += "`r`n`r`nIts running command will be stopped." }
+        $answer = [System.Windows.Forms.MessageBox]::Show($question, 'Close session', 'YesNo', 'Warning')
+        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        if ($currentPage.Tag.IsRunning -and $currentPage.Tag.Cleanup) { & $currentPage.Tag.Cleanup }
+        $tabs.TabPages.Remove($currentPage)
+        $currentPage.Dispose()
+        if ($tabs.TabPages.Count -gt 0) { $tabs.SelectedIndex = [Math]::Min($tabs.SelectedIndex, $tabs.TabPages.Count - 1) }
+        & $guiState.SyncSessionPicker
     }.GetNewClosure())
 
     # Start with one job tab so the window isn't empty on first launch.
@@ -155,7 +203,7 @@ function Show-Gui {
     # sure no background process / event subscription is left orphaned either way.
     $form.Add_FormClosing({
         param($s, $e)
-        $running = @($tabs.TabPages | Where-Object { $_ -ne $addTab -and $_.Tag -and $_.Tag.IsRunning })
+        $running = @($tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
         # Update asked already (and said which jobs it stops).
         if ($running.Count -gt 0 -and -not $script:closeConfirmed -and -not $guiState.CloseConfirmed) {
             $names = ($running | ForEach-Object { $_.Text }) -join ', '
@@ -397,6 +445,8 @@ function New-JobTab {
     $btnGitStatus.Text = 'Status'; $btnGitStatus.Font = $uiFont
     $btnGitPush = New-Object System.Windows.Forms.Button
     $btnGitPush.Text = 'Push'; $btnGitPush.Font = $uiFont
+    $btnCodeCli = New-Object System.Windows.Forms.Button
+    $btnCodeCli.Text = 'Agent chat...'; $btnCodeCli.Font = $uiFont
     $gitBtnW = [Math]::Max((Get-ButtonWidth $btnGitAdd 110), (Get-ButtonWidth $btnGitCommit 110))
     $gitBtnX = $boxWidth - $UI.BoxPad - $gitBtnW
     $gitInputW = $gitBtnX - $UI.BtnGap - $inputX
@@ -424,17 +474,18 @@ function New-JobTab {
     $btnGitCommit.Anchor = 'Top,Right'
 
     $rowY += $UI.MessageH + ($UI.BoxRowPitch - $UI.BtnH)
-    [void](Set-ButtonRow @($btnGitStatus, $btnGitPush) $UI.BoxPad $rowY 110)
+    [void](Set-ButtonRow @($btnGitStatus, $btnGitPush, $btnCodeCli) $UI.BoxPad $rowY 110)
 
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpGit $UI.Pad $y $boxWidth $boxH
     $grpGit.Anchor = 'Top,Left,Right'
-    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitPush))
+    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitPush, $btnCodeCli))
     $y += $boxH + $UI.BoxGap
     $tips.SetToolTip($txtGitAdd, 'Paths separated by spaces; put a path with spaces in "double quotes"; . adds every change.')
     $tips.SetToolTip($btnGitStatus, 'git status of the target app''s repo (read-only, no confirmation).')
-    $tips.SetToolTip($btnGitCommit, 'git commit with the message above (several lines are fine).')
-    $tips.SetToolTip($btnGitPush, 'git push of the current branch to its upstream — never --force.')
+    $tips.SetToolTip($btnGitCommit, 'git commit with the message above (several lines are fine). Gitleaks scans the staged changes first; a finding stops the commit.')
+    $tips.SetToolTip($btnGitPush, 'git push of the current branch to its upstream — never --force. Gitleaks scans the commits the remote does not have yet; a finding stops the push.')
+    $tips.SetToolTip($btnCodeCli, 'Choose a local agent, keep separate conversations, and send prompts from this window. The agent can edit the selected project.')
 
     # ── Bootstrap a project into an empty GitHub repository ─────────────────────
     $grpBootstrap = New-Object System.Windows.Forms.GroupBox
@@ -497,9 +548,11 @@ function New-JobTab {
     $btnBootstrapCreateRepo.Text = 'Create private repo'; $btnBootstrapCreateRepo.Font = $uiFont
     $btnBootstrapActionsSecrets = New-Object System.Windows.Forms.Button
     $btnBootstrapActionsSecrets.Text = 'Actions secrets...'; $btnBootstrapActionsSecrets.Font = $uiFont
+    $btnBootstrapGitIgnore = New-Object System.Windows.Forms.Button
+    $btnBootstrapGitIgnore.Text = 'Git ignore...'; $btnBootstrapGitIgnore.Font = $uiFont
     $btnBootstrapAddApp = New-Object System.Windows.Forms.Button
     $btnBootstrapAddApp.Text = 'Add app'; $btnBootstrapAddApp.Font = $uiFont
-    [void](Set-ButtonRow @($btnBootstrapAddApp, $btnBootstrapCreateRepo, $btnBootstrapActionsSecrets) $UI.BoxPad $rowY $UI.BootstrapButtonMinW)
+    [void](Set-ButtonRow @($btnBootstrapAddApp, $btnBootstrapCreateRepo, $btnBootstrapActionsSecrets, $btnBootstrapGitIgnore) $UI.BoxPad $rowY $UI.BootstrapButtonMinW)
 
     $rowY += $UI.BoxRowPitch
     $btnBootstrapPlan = New-Object System.Windows.Forms.Button
@@ -516,7 +569,7 @@ function New-JobTab {
     $grpBootstrap.Controls.AddRange(@(
         $lblBootstrapName, $txtBootstrapName, $lblBootstrapRoot, $txtBootstrapRoot, $btnBootstrapBrowse, $lblBootstrapRepo, $txtBootstrapRepo,
         $lblBootstrapMessage, $txtBootstrapMessage, $lblBootstrapScanner, $txtBootstrapScanner,
-        $btnBootstrapAddApp, $btnBootstrapCreateRepo, $btnBootstrapActionsSecrets, $btnBootstrapPlan, $btnBootstrapPrepare, $btnBootstrapPublish))
+        $btnBootstrapAddApp, $btnBootstrapCreateRepo, $btnBootstrapActionsSecrets, $btnBootstrapGitIgnore, $btnBootstrapPlan, $btnBootstrapPrepare, $btnBootstrapPublish))
     $y += $boxH + $UI.BoxGap
     $tips.SetToolTip($txtBootstrapScanner, 'Optional. Leave blank to find Gitleaks on PATH or in a sibling gitleaks_* folder.')
     $tips.SetToolTip($btnBootstrapPrepare, 'Sets main and origin, scans for secrets, then stages files. Review the staged paths before publishing.')
@@ -524,6 +577,7 @@ function New-JobTab {
     $tips.SetToolTip($btnBootstrapAddApp, 'Registers a Git-only target in apps.json and selects it, so these bootstrap controls can continue with this project.')
     $tips.SetToolTip($btnBootstrapCreateRepo, 'Creates a new empty private GitHub repository from the owner/name field. It does not stage or push project files.')
     $tips.SetToolTip($btnBootstrapActionsSecrets, 'Lists repository-level GitHub Actions secret names and lets you add, replace, or delete a secret for the selected app.')
+    $tips.SetToolTip($btnBootstrapGitIgnore, 'Review and edit the .gitignore in the selected project folder. Existing comments and entries are preserved unless you change them.')
     $tips.SetToolTip($btnBootstrapBrowse, 'Choose an existing local project folder. Its folder name is suggested as the app name when that field is blank.')
 
     $initialBootstrapApp = Get-App $cmbTarget.SelectedItem
@@ -570,6 +624,7 @@ function New-JobTab {
 
     $panel.AutoScrollMinSize = New-Object System.Drawing.Size((Px $UI.ContentWidth), (Px $y))
     $panel.Controls.AddRange(@($lblTarget, $cmbTarget, $lblVer, $txtVer, $lblCur, $chkPublish, $chkDry, $grp, $grpPub, $grpVis, $grpTask, $grpGit, $grpBootstrap, $grpNotes, $logBox, $status))
+    Enable-CollapsibleSections -Panel $panel -Sections @($grp, $grpPub, $grpVis, $grpTask, $grpGit, $grpBootstrap, $grpNotes) -InitiallyExpanded @('Steps')
     $panel.Dock = 'Fill'
     $page.Controls.Add($panel)
 
@@ -610,8 +665,10 @@ function New-JobTab {
     # without opening each one.
     $setTabStatus = {
         param($text)
+        $tabState.StatusText = $text
         $appName = if ($cmbTarget.SelectedItem) { $cmbTarget.SelectedItem } else { "Job $Number" }
         $page.Text = if ($text) { "$appName — $text" } else { "$appName" }
+        if ($Tabs.Tag -and $Tabs.Tag.SyncSessionPicker) { & $Tabs.Tag.SyncSessionPicker }
     }.GetNewClosure()
 
     # The Git group follows the selected app's repo: its name, branch and folder in the title; the buttons off
@@ -700,7 +757,7 @@ function New-JobTab {
             $btnMakePublic.Enabled = $canManageVisibility
             $btnMakePrivate.Enabled = $canManageVisibility
         }
-        if (-not $tabState.IsRunning) { & $setTabStatus $null }
+        & $setTabStatus $(if ($tabState.IsRunning) { $tabState.StatusText } else { $null })
     }.GetNewClosure()
 
     $run = {
@@ -733,13 +790,13 @@ function New-JobTab {
             if ($ans -ne 'Yes') { & $appendLog "Cancelled: $label"; return }
         }
 
-        # Guard against a second real run stacking on top of this tab's current one —
-        # intended concurrency is ACROSS tabs (open another "+" tab for that), not two
-        # overlapping processes sharing this one tab's $tabState.Proc/IsRunning slot,
+        # Guard against a second real run stacking on top of this session's current one —
+        # intended concurrency is ACROSS sessions, not two overlapping processes sharing
+        # this session's $tabState.Proc/IsRunning slot,
         # which would silently orphan the first process's reference (breaking Cleanup /
         # kill-on-close for it) and race the two jobs' output timers' writes to IsRunning.
         if ($tabState.IsRunning) {
-            & $appendLog "This tab already has a job running — open a new tab (the '+' tab) to run another one alongside it."
+            & $appendLog 'This session already has a job running — open a new session to run another one alongside it.'
             return
         }
 
@@ -964,6 +1021,25 @@ function New-JobTab {
             & $appendLog 'Could not manage Actions secrets. Check gh authentication, repository access, and Actions-secrets permission. Secret values are not logged.'
         }
     }.GetNewClosure()
+    $manageGitIgnore = {
+        if ($tabState.IsRunning) { & $appendLog 'Wait until this tab Git job finishes before editing .gitignore.'; return }
+        $rawRoot = $txtBootstrapRoot.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($rawRoot)) {
+            $selectedApp = Get-App $cmbTarget.SelectedItem
+            if ($selectedApp) { $rawRoot = [string]$selectedApp.repoRoot }
+        }
+        if ([string]::IsNullOrWhiteSpace($rawRoot)) { & $appendLog 'Choose a project folder before managing .gitignore.'; return }
+        if (-not (Test-Path -LiteralPath $rawRoot -PathType Container)) { & $appendLog "Project folder does not exist: $rawRoot"; return }
+        try {
+            $repoRoot = (Resolve-Path -LiteralPath $rawRoot).Path
+            $result = Show-GitIgnoreDialog -RepositoryRoot $repoRoot -Owner ($page.FindForm())
+            if (-not $result -or -not $result.Saved) { & $appendLog "Git ignore window closed without saving for $repoRoot."; return }
+            if ($result.Changed) { & $appendLog "Saved .gitignore in $repoRoot ($($result.EntryCount) entries)." }
+            else { & $appendLog ".gitignore is unchanged in $repoRoot ($($result.EntryCount) entries)." }
+        } catch {
+            & $appendLog "Git ignore manager stopped: $($_.Exception.Message)"
+        }
+    }.GetNewClosure()
     $tabState.RegisterApp = $registerApp
 
     # Best-effort: if the whole app is closed while this tab's job is still running,
@@ -1050,20 +1126,16 @@ function New-JobTab {
     $btnBootstrapPublish.Add_Click({ & $startBootstrap 'publish' }.GetNewClosure())
     $btnBootstrapCreateRepo.Add_Click({ & $createBootstrapRepo }.GetNewClosure())
     $btnBootstrapActionsSecrets.Add_Click({ & $manageActionsSecrets }.GetNewClosure())
+    $btnBootstrapGitIgnore.Add_Click({ & $manageGitIgnore }.GetNewClosure())
     $btnBootstrapBrowse.Add_Click({
-        $folderDialog = $null
         try {
-            $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
-            $folderDialog.Description = 'Choose the local project folder to register.'
-            $folderDialog.ShowNewFolderButton = $false
             $currentRoot = $txtBootstrapRoot.Text.Trim()
-            if ($currentRoot -and (Test-Path -LiteralPath $currentRoot -PathType Container)) {
-                $folderDialog.SelectedPath = (Resolve-Path -LiteralPath $currentRoot).Path
-            }
             $owner = $page.FindForm()
-            $dialogResult = if ($owner) { $folderDialog.ShowDialog($owner) } else { $folderDialog.ShowDialog() }
-            if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
-                $selectedRoot = (Resolve-Path -LiteralPath $folderDialog.SelectedPath).Path
+            $pickedFolders = Invoke-BudaFilePicker -Key 'add-app.project-folder' -Purpose Folder `
+                -Title 'Choose the local project folder to register.' -Owner $owner `
+                -CurrentFolder $currentRoot -DefaultFolder $AppDir
+            if ($pickedFolders.Count -gt 0) {
+                $selectedRoot = (Resolve-Path -LiteralPath ([string]$pickedFolders[0])).Path
                 $selectedDirectory = Get-Item -LiteralPath $selectedRoot
                 $txtBootstrapRoot.Text = $selectedRoot
                 $suggestedName = $selectedDirectory.Name
@@ -1088,8 +1160,6 @@ function New-JobTab {
             }
         } catch {
             & $appendLog "Folder selection failed: $($_.Exception.Message)"
-        } finally {
-            if ($folderDialog) { $folderDialog.Dispose() }
         }
     }.GetNewClosure())
     $btnBootstrapAddApp.Add_Click({
@@ -1261,19 +1331,54 @@ function New-JobTab {
         }
         & $run $cmds "git add ($($app.name))" $false $app.repoRoot (Build-GitAfterLines $app 'add')
     }.GetNewClosure())
+    # Commit and Push scan with Gitleaks first (Build-GitSecretScanCommand). With no scanner found they stop
+    # here: a missing Gitleaks must not turn into an unscanned commit or push.
+    $resolveSecretScanner = {
+        param([string]$Outcome)
+        $scanner = $null
+        try { $scanner = Resolve-GitBootstrapScanner $txtBootstrapScanner.Text.Trim() $AppDir }
+        catch { $null = & $appendLog "Gitleaks: $($_.Exception.Message)" }
+        if (-not $scanner) {
+            $null = & $appendLog "Gitleaks was not found, so $Outcome. Install it, put it on PATH or in a gitleaks_* folder beside InstaladorBUDA's folder, or set Gitleaks path in the GitHub bootstrap group."
+        }
+        return $scanner
+    }.GetNewClosure()
     $btnGitCommit.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
-        $cmds = Build-GitCommitCommands $app $txtGitMsg.Text
-        if (@($cmds).Count -eq 0) { & $appendLog 'Type the commit message first.'; return }
+        $commitLines = @(Build-GitCommitCommands $app $txtGitMsg.Text)
+        if ($commitLines.Count -eq 0) { & $appendLog 'Type the commit message first.'; return }
+        $scanner = & $resolveSecretScanner 'nothing was committed'
+        if (-not $scanner) { return }
+        # The message comment stays first so the confirmation still opens with what is being committed.
+        $cmds = @($commitLines[0], (Build-GitSecretScanCommand $app $scanner 'commit')) + @($commitLines | Select-Object -Skip 1)
         $first = ($txtGitMsg.Text.Trim() -split "`r?`n")[0]
         & $run $cmds "git commit ($($app.name)): $first" $false $app.repoRoot (Build-GitAfterLines $app 'commit') $refreshGit
     }.GetNewClosure())
     $btnGitPush.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
+        $scanner = & $resolveSecretScanner 'nothing was pushed'
+        if (-not $scanner) { return }
         $branch = Get-GitBranch $app
-        & $run (Build-GitPushCommands $app) "git push ($($app.name), $branch)" $false $app.repoRoot (Build-GitAfterLines $app 'push') $refreshGit
+        $cmds = @(Build-GitSecretScanCommand $app $scanner 'push') + @(Build-GitPushCommands $app)
+        & $run $cmds "git push ($($app.name), $branch)" $false $app.repoRoot (Build-GitAfterLines $app 'push') $refreshGit
+    }.GetNewClosure())
+    $btnCodeCli.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { & $appendLog 'Select an app before opening agent chat.'; return }
+        if ($tabState.IsRunning) { & $appendLog 'Wait until this session running job finishes before opening agent chat.'; return }
+        if (-not $app.repoRoot -or -not (Test-Path -LiteralPath $app.repoRoot -PathType Container)) {
+            & $appendLog "Project folder is missing for $($app.name)."; return
+        }
+        try {
+            $repoRoot = (Resolve-Path -LiteralPath $app.repoRoot).Path
+            $result = Show-CodeCliDialog -AppName ([string]$app.name) -RepositoryRoot $repoRoot -Owner ($page.FindForm())
+            if ($result -and $result.Used) { & $appendLog "Opened the in-app agent conversation for $($app.name)." }
+            else { & $appendLog 'Agent conversation closed.' }
+        } catch {
+            & $appendLog "Agent conversation stopped: $($_.Exception.Message)"
+        }
     }.GetNewClosure())
 
     $tabState.AppendLog = $appendLog
@@ -1287,8 +1392,8 @@ function New-JobTab {
             Dispatch = $btnDispatch; Copy = $btnCopy; Actions = $btnActions
             LoadRuns = $btnLoadRuns; PublishRun = $btnPubRun; Undraft = $btnUndraft; ReleasePage = $btnRelPage
             MakePublic = $btnMakePublic; MakePrivate = $btnMakePrivate; Task = $btnTask
-            GitAdd = $btnGitAdd; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush
-            AddApp = $btnBootstrapAddApp; CreateRepo = $btnBootstrapCreateRepo; ActionsSecrets = $btnBootstrapActionsSecrets; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
+            GitAdd = $btnGitAdd; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
+            AddApp = $btnBootstrapAddApp; CreateRepo = $btnBootstrapCreateRepo; ActionsSecrets = $btnBootstrapActionsSecrets; GitIgnore = $btnBootstrapGitIgnore; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
         }
     }
     $page.Tag = $tabState

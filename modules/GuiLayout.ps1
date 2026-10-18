@@ -27,7 +27,48 @@ $UI = @{
     MessageH     = 56     # the Git group's commit-message box (two lines and a bit)
     LogH         = 150    # log box
     StatusH      = 30     # git / gh status line
-    TopBarH      = 50     # the strip above the tabs holding Update (a button and its margin)
+    TopBarH      = 92     # build controls on row one and the session selector on row two
+    SessionRowY  = 52
+    SessionLabelW = 58
+    SessionComboW = 400
+    SessionNewW = 115
+    SessionCloseW = 110
+    HiddenTabHeader = 1
+    SectionHeaderH = 26
+    CollapsedSectionH = 34
+    AgentConfig = @{
+        Width = 720; Height = 390
+        List = @{ X = 16; Y = 18; Width = 180; Height = 300 }
+        LabelX = 214; LabelWidth = 470; LabelHeight = 22; FieldWidth = 470
+        NameLabelY = 24; NameFieldY = 48
+        CommandLabelY = 78; CommandFieldY = 102; CommandFieldWidth = 352
+        ArgumentsLabelY = 132; ArgumentsFieldY = 156
+        BrowseX = 580; BrowseY = 104; BrowseWidth = 104; BrowseHeight = 28
+        ModeLabelX = 214; ModeY = 186; ModeLabelWidth = 112; ModeLabelHeight = 26; ModeX = 330; ModeWidth = 354
+        HelpX = 214; HelpY = 222; HelpWidth = 470; HelpHeight = 44
+        ButtonsY = 328; AddX = 16; AddWidth = 92; DeleteX = 112; DeleteWidth = 84
+        HelpButtonX = 210; HelpButtonWidth = 92
+        SaveX = 474; SaveWidth = 100; CancelX = 584; CancelWidth = 100; ButtonHeight = 32
+    }
+    AgentHelp = @{
+        Width = 760; Height = 590
+        TextX = 16; TextY = 16; TextWidth = 728; TextHeight = 506
+        CloseX = 644; CloseY = 538; CloseWidth = 100; CloseHeight = 32
+    }
+    AgentChat = @{
+        Width = 760; Height = 620; MinWidth = 700; MinHeight = 520
+        ProjectX = 18; ProjectY = 10; ProjectWidth = 724; ProjectHeight = 28
+        AgentLabelX = 18; AgentLabelY = 46; AgentLabelWidth = 65; AgentX = 86; AgentWidth = 420
+        ConfigureX = 518; ConfigureY = 44; ConfigureWidth = 224; ConfigureHeight = 30
+        ConversationLabelX = 18; ConversationLabelY = 84; ConversationLabelWidth = 88
+        ConversationX = 108; ConversationWidth = 430; NewConversationX = 550; NewConversationWidth = 192
+        RowY = 82; RowHeight = 30
+        TranscriptX = 18; TranscriptY = 122; TranscriptWidth = 724; TranscriptHeight = 302
+        PromptLabelX = 18; PromptLabelY = 432; PromptLabelWidth = 724; PromptLabelHeight = 24
+        PromptX = 18; PromptY = 458; PromptWidth = 724; PromptHeight = 94
+        SendX = 18; StopX = 160; ActionY = 570; SendWidth = 132; StopWidth = 100
+        CloseX = 642; CloseWidth = 100; ActionHeight = 34
+    }
     WindowWidth  = 780    # main window, before it is capped to the screen
     WindowHeight = 1150
 }
@@ -81,6 +122,111 @@ function Set-ButtonRow {
         $X += $w + $UI.BtnGap
     }
     return $X
+}
+
+# Turns each GroupBox into a compact, independently expandable section. The section
+# heading stays visible while the section body is hidden, and later controls move with
+# it so collapsing GitHub groups does not leave large blank areas in the scroll panel.
+function Enable-CollapsibleSections {
+    param(
+        $Panel,
+        $Sections,
+        [string[]]$InitiallyExpanded = @()
+    )
+
+    foreach ($section in $Sections) {
+        if (-not $section) { continue }
+        $title = [string]$section.Text
+        if ([string]::IsNullOrWhiteSpace($title)) { continue }
+        $expandedHeight = $section.Height
+
+        $header = New-Object System.Windows.Forms.Button
+        $header.Text = "▼  $title"
+        $header.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+        $header.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+        $header.ForeColor = $section.ForeColor
+        $header.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $header.AccessibleName = $title
+        $header.AccessibleDescription = 'Click to expand or collapse this section.'
+        $header.AutoEllipsis = $true
+        $header.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $header.FlatAppearance.BorderSize = 0
+        $header.BackColor = $section.BackColor
+        $header.UseVisualStyleBackColor = $false
+        $header.SetBounds((Px 8), (Px 1), [Math]::Max((Px 100), $section.ClientSize.Width - (Px 16)), (Px $UI.SectionHeaderH))
+        $header.Anchor = 'Top,Left,Right'
+
+        # The button supplies the complete heading, so leave the GroupBox caption empty.
+        $section.Text = ''
+        $section.Controls.Add($header)
+        $header.BringToFront()
+
+        $state = [hashtable]::Synchronized(@{
+            Expanded = $true
+            ExpandedHeight = $expandedHeight
+            CollapsedHeight = (Px $UI.CollapsedSectionH)
+            Title = $title
+            Section = $section
+            Header = $header
+            Panel = $Panel
+        })
+
+        $toggle = {
+            $section = $state.Section
+            $panel = $state.Panel
+            $header = $state.Header
+            $oldBottom = $section.Bottom
+            if ($state.Expanded) {
+                foreach ($child in @($section.Controls)) {
+                    if ($child -ne $header) { $child.Visible = $false }
+                }
+                $section.Height = $state.CollapsedHeight
+                $delta = $section.Height - $state.ExpandedHeight
+                $state.Expanded = $false
+                $header.Text = "▶  $($state.Title)"
+            } else {
+                foreach ($child in @($section.Controls)) {
+                    if ($child -ne $header) { $child.Visible = $true }
+                }
+                $section.Height = $state.ExpandedHeight
+                $delta = $section.Height - $state.CollapsedHeight
+                $state.Expanded = $true
+                $header.Text = "▼  $($state.Title)"
+            }
+
+            if ($delta -ne 0) {
+                foreach ($sibling in @($panel.Controls)) {
+                    if ($sibling -ne $section -and $sibling.Top -ge $oldBottom) {
+                        $sibling.Top += $delta
+                    }
+                }
+                $scrollSize = $panel.AutoScrollMinSize
+                $newScrollHeight = [Math]::Max((Px $UI.CollapsedSectionH), $scrollSize.Height + $delta)
+                $panel.AutoScrollMinSize = New-Object System.Drawing.Size($scrollSize.Width, $newScrollHeight)
+            }
+        }.GetNewClosure()
+
+        # The header carries its section's state so Expand-CollapsibleSectionsFor can open it.
+        $state.Toggle = $toggle
+        $header.Tag = $state
+        $header.Add_Click({ & $toggle }.GetNewClosure())
+        if ($InitiallyExpanded -notcontains $title) { & $toggle }
+    }
+}
+
+# Opens each collapsed section that holds $Control, so the control is shown and can be clicked.
+function Expand-CollapsibleSectionsFor {
+    param($Control)
+    for ($parent = $Control.Parent; $parent; $parent = $parent.Parent) {
+        if ($parent -isnot [System.Windows.Forms.GroupBox]) { continue }
+        foreach ($child in @($parent.Controls)) {
+            $sectionState = $child.Tag
+            if ($sectionState -is [hashtable] -and $sectionState.ContainsKey('Toggle')) {
+                if (-not $sectionState.Expanded) { & $sectionState.Toggle }
+                break
+            }
+        }
+    }
 }
 
 function Convert-CliList {

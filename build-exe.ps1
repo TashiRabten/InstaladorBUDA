@@ -31,6 +31,11 @@ $moduleFiles = [ordered]@{
     '#__RELEASE_OPERATIONS_MODULE__' = 'modules\ReleaseOperations.ps1'
     '#__APP_SELECTION_MODULE__' = 'modules\AppSelection.ps1'
     '#__GUI_LAYOUT_MODULE__' = 'modules\GuiLayout.ps1'
+    '#__FILE_PICKER_MODULE__' = 'modules\FilePicker.ps1'
+    '#__GIT_IGNORE_MODULE__' = 'modules\GitIgnore.ps1'
+    '#__AGENT_PROFILES_MODULE__' = 'modules\AgentProfiles.ps1'
+    '#__CODE_CLI_MODULE__' = 'modules\CodeCli.ps1'
+    '#__COCKPIT_HELP_MODULE__' = 'modules\CockpitHelp.ps1'
     '#__COCKPIT_MODULE__' = 'modules\Cockpit.ps1'
     '#__GUI_MODULE__' = 'modules\Gui.ps1'
 }

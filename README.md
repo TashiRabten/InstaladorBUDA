@@ -4,12 +4,16 @@ A small **standalone deployment cockpit** for the BUDA apps. Pick a target app a
 version, then **Upload models**, **Deploy (push tag)**, **Trigger workflow**, or
 **Publish from an existing run (no rebuild)** — without memorizing any commands. Every
 action has a **command fallback**: tick *Dry run* to print the exact command, copy it, or
-let it run — its output streams into the tab's log. After a Deploy or Trigger, the log
+let it run — its output streams into that session's log. After a Deploy or Trigger, the log
 **follows the GitHub build step by step and reports the release or image publication**
 (see 2a), so you don't have to open GitHub to see the result.
 
-Each **tab** is an independent job (its own app, version, notes and log); the **+** tab opens
-another, so several releases can run side by side.
+Each **session** is an independent job with its own app, version, notes and log. Use the
+**Session** dropdown to switch between release, GitHub and bootstrap work; **New session**
+opens another job so several operations can run side by side.
+
+The main window's operation groups are also expandable sections: click a heading to hide or
+show its controls. This applies to the GitHub groups as well, keeping the work area compact.
 
 It is **fully config-driven**. The app list lives in [`apps.json`](apps.json) next to the
 program. Use **Add app** in the GitHub bootstrap group to register a Git-only app and then
@@ -38,15 +42,15 @@ button performs that rebuild and warns if running jobs would be stopped.
 
 The source is split across `modules/`: `AppRegistry.psm1` owns the app registry,
 `GitBootstrap.ps1` owns first-push setup, and separate files hold release operations,
-console selection, GUI layout, CLI cockpit controls, and the WinForms tabs. The build
-bundles these modules into the executable, so the distributed `.exe` still needs only
+console selection, GUI layout, native file dialogs, CLI cockpit controls, and the WinForms
+session panels. The build bundles these modules into the executable, so the distributed `.exe` still needs only
 `apps.json`.
 
 ### Control the visible cockpit from the CLI
 
 The GUI exposes a local, current-user-only named pipe. CLI requests are applied to the
-same tabs and controls used by mouse clicks, so the selected target, version, options,
-job status, and output remain visible in the cockpit. Start it from a terminal:
+same session selector and controls used by mouse clicks, so the selected target, version,
+options, job status, and output remain visible in the cockpit. Start it from a terminal:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"start"}'
@@ -56,29 +60,31 @@ job status, and output remain visible in the cockpit. Start it from a terminal:
 ```
 
 `start` opens the visible cockpit if it is not already running. Then configure its first
-tab and run a job through the same GUI controls:
+session and run a job through the same GUI controls:
 
 ```powershell
-& .\InstaladorBUDA.exe -Cli '{"command":"configure","tab":1,"target":"SegBUDA","version":"1.0.18","notes":"Release notes"}'
-& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"dispatch","bundles":["essential"],"confirm":true,"waitMs":900000}'
-& .\InstaladorBUDA.exe -Cli '{"command":"status","tab":1}'
+& .\InstaladorBUDA.exe -Cli '{"command":"configure","session":1,"target":"SegBUDA","version":"1.0.18","notes":"Release notes"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"dispatch","bundles":["essential"],"confirm":true,"waitMs":900000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"status","session":1}'
 ```
 
-Use `new-tab` and `select-tab` to manage concurrent jobs. `close` closes the cockpit after
-the response has been returned. Both `close` and `update` require `"confirm":true`; if any
+Use `new-session` and `select-session` to manage concurrent jobs. `close-session` removes
+the selected session after confirmation; `new-tab` and `select-tab` remain aliases.
+`close` closes the cockpit after the response has been returned. Both `close` and `update` require `"confirm":true`; if any
 job is running, also pass `"stopRunning":true` to confirm that it may be stopped. Update
 returns an acknowledgement before rebuilding and restarting the cockpit.
 
 An `action` request can also
 include `target`, `version`, `publish`, `dryRun`, and `notes` to configure and run in one
 call. Bundle IDs/names and model IDs are available from `list`; omit `bundles` to use the
-configured defaults, or pass `"all"`. `waitMs` waits for the tab's job to finish and returns
-its final status/log tail.
+configured defaults, or pass `"all"`. `waitMs` waits for the session's job to finish and returns
+its final status/log tail. `status` returns `sessions` and a backwards-compatible `tabs` alias.
 
 `help` returns the parameter schemas and examples. `release-plan` is a read-only preflight:
 it reports the published version, suggested next version, selected tag, branch and HEAD,
-working-tree state, and any existing-tag blockers. You can pass `target`, `tab`, and an
-optional `version`; with no target/version it uses the selected tab's target and version:
+working-tree state, and any existing-tag blockers. You can pass `target`, `session` (or the
+older `tab` field), and an optional `version`; with no target/version it uses the selected
+session's target and version:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"release-plan","target":"TradutorBUDA"}'
@@ -92,15 +98,16 @@ job log. When adding an operation, add its control and CLI route together, then 
 `help` and this README.
 
 The command endpoint also has control commands whose GUI equivalent is direct: `start` /
-`close` open or close the window, `new-tab` / `select-tab` use the tab strip, `configure`
-sets the visible fields, `status` reads the tabs and logs, `list` reads the target and task
+`close` open or close the window, `new-session` / `select-session` / `close-session` use the
+Session dropdown and its buttons, `configure` sets the visible fields, `status` reads sessions
+and logs, `list` reads the target and task
 choices, and `help` is documented here and in the CLI response. These commands do not
 represent extra deployment operations.
 
 The GUI now includes **Release plan** and **Retag existing release** beside Deploy. It also
 includes a **GitHub repository bootstrap** group with the same three phases as the CLI:
 `Preflight`, `Prepare and stage`, and `Commit and push`. Both paths write to the selected
-tab's log. `Prepare and stage` sets up `main` and `origin`, scans and stages the project;
+session's log. `Prepare and stage` sets up `main` and `origin`, scans and stages the project;
 review the staged paths in the log before `Commit and push`. The publish phase checks the
 prepared tree again and stops if files changed.
 
@@ -110,10 +117,10 @@ delete option. Values are masked and passed to `gh secret set` through standard 
 never go in a CLI request, process arguments, a temporary file, or the job log. The GUI asks
 before adding/replacing or deleting a secret. The CLI action opens that same manager and
 requires explicit confirmation. It returns a scheduled acknowledgement before opening the
-dialog; after closing it, inspect the tab log or request `status` for the result:
+dialog; after closing it, inspect the session log or request `status` for the result:
 
 ```powershell
-& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"target":"ScanBUDA","action":"actions-secrets","confirm":true}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"target":"ScanBUDA","action":"actions-secrets","confirm":true}'
 ```
 
 Do not add `secret`, `token`, `value`, `apiKey`, or `password` to the request JSON. The
@@ -121,8 +128,46 @@ handler rejects those fields. Close the manager to leave the repository unchange
 names follow [GitHub's Actions naming rules](https://docs.github.com/en/actions/reference/security/secrets#naming-your-secrets); the manager lists names only because GitHub does not
 return stored secret values. For ScanBUDA's private OCR bridge, use the name
 `TRADUTORBUDA_REPO_TOKEN` and a fine-grained token with read-only access to the private
-TradutorBUDA repository. The rebuilt executable exposes the action in `help`; actual GitHub
-secret updates have not been run from the dialog.
+TradutorBUDA repository. The rebuilt executable exposes the action in `help`.
+
+The value reaches `gh` as UTF-8 with no byte-order mark. Earlier builds, running with a
+UTF-8 console code page (Windows' "Use Unicode UTF-8 for worldwide language support"), sent
+the bytes `EF BB BF` before the value, and GitHub rejected a token saved that way with
+`HTTP 401: Bad credentials`. Save any secret entered through an earlier build again. Not yet
+verified in the app: no real secret has been saved through the rebuilt dialog.
+
+The bootstrap group also has **Git ignore...** for the selected project folder. It opens the
+existing `.gitignore`, lets you add a pattern or comment and remove selected lines, and saves
+only when you click **Save**. Existing comments and entries stay in place unless you edit or
+remove them. The CLI opens the same visible manager and returns a scheduled acknowledgement:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"gitignore","session":1,"repoRoot":"C:\\work\\MyApp"}'
+```
+
+The **Agent chat...** button in the Git group opens an in-app prompt window for the selected
+app. Choose an agent profile and a conversation from their dropdowns, type a prompt, and
+send it without leaving the installer. Starter profiles for three common coding CLIs are
+created on first use; **Help...** in **Configure agents** lists their values and sign-in
+requirements. **Configure agents...** adds profiles, chooses a
+local `.exe`, `.cmd` or `.bat` with Browse, and sets arguments plus whether the prompt is
+passed as an argument or through standard input. Standard input is the default for new
+profiles; argument mode places the prompt in the process command line and is refused for
+`.cmd`/`.bat` commands, which Windows re-parses. Commands are looked up on `PATH`, the saved
+user/system `PATH`, and npm's global folder. **Stop** ends the agent and any process it
+started. Conversations stay local to this Windows user and are protected
+with Windows user encryption; the executable uses its existing local sign-in. Each first send
+in a conversation asks before allowing the agent to modify project files. The CLI can open
+the same chat window:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"code-cli","target":"MyApp","confirm":true}'
+```
+
+The **Project folder** Browse button in **Add app** and the executable Browse button use
+Windows' native file dialog. Each purpose remembers its last folder and keeps recent folders
+in the navigation pane; the executable selector supports multiple selection even though the
+installer uses the first selected executable.
 
 TradutorBUDA's suggested version comes from the newest published release tag, with local
 tags as a fallback when no release is available. Deploy checks the local tag, remote tag,
@@ -133,7 +178,7 @@ flags; it uses a lease against the remote tag object so it will stop if someone 
 tag after the preflight:
 
 ```powershell
-& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}'
 ```
 
 Available actions mirror the cockpit: `upload`, `deploy`, `dispatch`, `load-runs`,
@@ -150,10 +195,10 @@ command; failures return a nonzero exit code. If the GUI is closed, commands oth
 For example, stage, commit, and push selected files through the same Git panel controls:
 
 ```powershell
-& .\InstaladorBUDA.exe -Cli '{"command":"configure","tab":1,"gitPaths":"InstaladorBUDA.ps1 README.md","commitMessage":"Add cockpit CLI control"}'
-& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-add","confirm":true,"waitMs":30000}'
-& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-commit","confirm":true,"waitMs":30000}'
-& .\InstaladorBUDA.exe -Cli '{"command":"action","tab":1,"action":"git-push","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"configure","session":1,"gitPaths":"InstaladorBUDA.ps1 README.md","commitMessage":"Add cockpit CLI control"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-add","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-commit","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-push","confirm":true,"waitMs":30000}'
 ```
 
 To initialize a local project against an existing, empty GitHub repository, use the
@@ -173,17 +218,18 @@ $publish = $base + @{ command = 'bootstrap-publish'; commitMessage = 'Initial pr
 & .\InstaladorBUDA.exe -Cli ($publish | ConvertTo-Json -Compress)
 ```
 
-Register a Git-only target from the current tab, then continue using those same bootstrap
+Register a Git-only target from the current session, then continue using those same bootstrap
 fields and controls:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"add-app","name":"MyApp","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"gitignore","session":1,"repoRoot":"C:\\work\\MyApp"}'
 & .\InstaladorBUDA.exe -Cli '{"command":"action","action":"create-repo","githubRepo":"owner/MyApp","confirm":true}'
 & .\InstaladorBUDA.exe -Cli '{"command":"bootstrap-plan","repoRoot":"C:\\work\\MyApp","githubRepo":"owner/MyApp"}'
 ```
 
 The GUI's **Add app** button uses the same validation and registration handler. It appends
-a Git-only entry to `apps.json` and selects it in all open tabs. **Create private repo**
+a Git-only entry to `apps.json` and selects it in all open sessions. **Create private repo**
 creates the empty GitHub repository from the `owner/name` field inside InstaladorBUDA; it
 does not upload files. When a build workflow is ready, edit that entry in `apps.json` with
 the release fields below.
@@ -203,7 +249,7 @@ Bootstrap requires `git`, authenticated `gh`, a configured Git author name and e
 empty GitHub remote, and Gitleaks. Managing Actions secrets requires authenticated `gh`
 with permission to manage repository secrets. Gitleaks is found on `PATH` or in a sibling
 `gitleaks_*_windows_*` folder; pass `gitleaksPath` to select another executable.
-The bootstrap fields can be saved on a tab with `configure` (`bootstrapRoot`, `githubRepo`,
+The bootstrap fields can be saved on a session with `configure` (`bootstrapRoot`, `githubRepo`,
 `bootstrapMessage`, and `gitleaksPath`); later bootstrap commands use those values when
 the corresponding request fields are omitted.
 
@@ -244,7 +290,7 @@ Current desktop and daemon targets:
 
 **Typical desktop release:** open InstaladorBUDA → pick the app → the version pre-fills (current +1)
 → **Upload models** only if a model changed → **Deploy (push tag)** → watch the build in the
-tab's log. When it ends, the log shows the release and its files. Done.
+session's log. When it ends, the log shows the release and its files. Done.
 
 If the selected version already has a tag or release, use `release-plan` to see the collision
 and choose a new version. To rerun work for an existing version, use **Trigger workflow**;
@@ -293,11 +339,11 @@ deployment dashboard.
 - **Trigger with *Publish* unchecked** is a test build: no release is expected, so the log lists
   the run's **artifacts** instead (release them later with *Publish selected run*).
 - **Publish selected run** and **Un-draft release** end with the same release report.
-- The **tab title** shows where it is — `waiting for the run...`, `building (1/3 jobs done)`,
+- The **Session dropdown** shows where each job is — `waiting for the run...`, `building (1/3 jobs done)`,
   `checking the release...` — and ends on `done`, or `failed (1)` when the run failed or the
   release is missing.
 - If the push or dispatch itself fails, it says so and does not wait for a build.
-- While it follows a build the tab is busy; use **+** for another job. Closing the window only
+- While it follows a build that session is busy; use **New session** for another job. Closing the window only
   stops the following — the build keeps going on GitHub.
 - `-Console` mode reports the same way after it runs the commands.
 
@@ -361,14 +407,14 @@ admin rights on the repo.
 
 A **"Git"** group runs git in the selected app's `repoRoot`. Its title shows the app, the
 current branch and the folder (`Git -> TradutorBUDA [main] C:\...`); the buttons are off when
-the folder is not a git repo. Output goes to the tab's log like any other job.
+the folder is not a git repo. Output goes to the session's log like any other job.
 
 | Control | What it does |
 |---|---|
 | **Status** | `git status` — read-only, so it runs without the confirmation dialog. |
 | **Add** + field | `git add -- <paths>`: paths separated by spaces, a path with spaces in `"double quotes"` (`"Screenshot 2026-09-02 171631.png" README.md`), `.` for every change. Shows `git status --short --branch` after. |
-| **Commit** + Message | `git commit -F <file>`: the message box can hold several lines, accents and quotes — it reaches git exactly as typed (it travels base64-encoded through a temp file, like the release note). Shows the new commit and the status after. |
-| **Push** | `git push` of the current branch to its upstream — never `--force`. |
+| **Commit** + Message | `git commit -F <file>`: the message box can hold several lines, accents and quotes — it reaches git exactly as typed (it travels base64-encoded through a temp file, like the release note). Gitleaks first scans the staged changes (`gitleaks git --pre-commit --staged`, findings redacted); a finding, a scanner error, or no Gitleaks found stops before `git commit`. Shows the new commit and the status after. |
+| **Push** | `git push` of the current branch to its upstream — never `--force`. Gitleaks first scans the commits the upstream does not have yet (the whole history on a first push) and stops the push on a finding. |
 
 `core.quotepath=false` is passed, so file names with accents or Tibetan print as written. Add,
 Commit and Push ask for confirmation (skipped under *Dry run*, which only prints the commands).
@@ -390,7 +436,7 @@ you can see the update took effect. The button is off when `build-exe.ps1` is no
 
 For a new project that only needs Git controls and first-push bootstrap, fill **App name**,
 **Project folder**, and **GitHub repo** in the bootstrap group and click **Add app**. The new
-target is stored in `apps.json` and selected in each open tab. You can then click
+target is stored in `apps.json` and selected in each open session. You can then click
 **Preflight**, inspect the plan, prepare and review the staged files, and commit and push
 through the existing bootstrap flow. The `add-app` CLI command accepts the same three values.
 
@@ -567,8 +613,13 @@ update each `repoRoot` if your checkout paths differ.
 | `modules/ReleaseOperations.ps1` | Release, Git, workflow, and follow-up commands. |
 | `modules/AppSelection.ps1` | Console menu and app/model/bundle selection. |
 | `modules/GuiLayout.ps1` | Shared GUI metrics and layout helpers. |
+| `modules/FilePicker.ps1` | Native Windows file/folder dialogs with per-purpose folder memory. |
+| `modules/GitIgnore.ps1` | `.gitignore` editor dialog with safe, explicit saves. |
+| `modules/AgentProfiles.ps1` | Agent profiles, command lookup, and the Configure agents and setup-help windows. |
+| `modules/CodeCli.ps1` | Encrypted local conversations and the in-app prompt window. |
+| `modules/CockpitHelp.ps1` | The CLI `help` reply: commands, parameters, examples and safety notes. |
 | `modules/Cockpit.ps1` | CLI requests and named-pipe cockpit commands. |
-| `modules/Gui.ps1` | Main window and per-tab WinForms controls/handlers. |
+| `modules/Gui.ps1` | Main window, session dropdown, and independent WinForms job panels. |
 | `apps.json` | The app registry. Use **Add app** for Git-only targets or edit for release fields. |
 | `build-exe.ps1` | Compiles `InstaladorBUDA.exe` via ps2exe. |
 | `README.md` | This file. |

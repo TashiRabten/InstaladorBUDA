@@ -56,6 +56,11 @@ if ($script:SelfPath) {
     . (Join-Path $AppDir 'modules\ReleaseOperations.ps1')
     . (Join-Path $AppDir 'modules\AppSelection.ps1')
     . (Join-Path $AppDir 'modules\GuiLayout.ps1')
+    . (Join-Path $AppDir 'modules\FilePicker.ps1')
+    . (Join-Path $AppDir 'modules\GitIgnore.ps1')
+    . (Join-Path $AppDir 'modules\AgentProfiles.ps1')
+    . (Join-Path $AppDir 'modules\CodeCli.ps1')
+    . (Join-Path $AppDir 'modules\CockpitHelp.ps1')
     . (Join-Path $AppDir 'modules\Cockpit.ps1')
     . (Join-Path $AppDir 'modules\Gui.ps1')
 } else {
@@ -63,6 +68,11 @@ if ($script:SelfPath) {
     #__RELEASE_OPERATIONS_MODULE__
     #__APP_SELECTION_MODULE__
     #__GUI_LAYOUT_MODULE__
+    #__FILE_PICKER_MODULE__
+    #__GIT_IGNORE_MODULE__
+    #__AGENT_PROFILES_MODULE__
+    #__CODE_CLI_MODULE__
+    #__COCKPIT_HELP_MODULE__
     #__COCKPIT_MODULE__
     #__GUI_MODULE__
 }

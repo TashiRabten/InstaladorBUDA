@@ -555,6 +555,31 @@ function Build-GitPushCommands {
     return @("`$upstream = git -C $repo rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>`$null; if (`$LASTEXITCODE -eq 0) { git -C $repo push } else { git -C $repo push -u origin HEAD }")
 }
 
+# Gitleaks runs in the same job before git commit / git push and ends the job on a finding or a scanner
+# error, so nothing it flags is committed or sent to GitHub. Commit scans the staged changes; push scans the
+# commits the upstream does not have yet (the whole history on a first push). Findings print redacted. The
+# repository's own .gitleaks.toml, when present, is used. The job goes on after a failing line, hence the exit.
+function Build-GitSecretScanCommand {
+    param($app, [string]$ScannerPath, [ValidateSet('commit', 'push')][string]$Step)
+    $repo = Quote-PS $app.repoRoot
+    $scanner = Quote-PS $ScannerPath
+    $flags = '--redact --no-banner --no-color -v'
+    if ($Step -eq 'commit') {
+        $prepare = ''
+        $scan = "& $scanner git --pre-commit --staged $flags $repo"
+        $outcome = 'nothing was committed'
+    } else {
+        $prepare = "`$__upstream = git -C $repo rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>`$null; " +
+            "`$__range = if (`$LASTEXITCODE -eq 0) { `"`$__upstream..HEAD`" } else { 'HEAD' }; "
+        $scan = "& $scanner git `"--log-opts=`$__range`" $flags $repo"
+        $outcome = 'nothing was pushed'
+    }
+    # A scanner that cannot start sets no exit code, so the catch ends the job too: the gate fails closed.
+    return $prepare +
+        "try { $scan } catch { Write-Host `"Gitleaks could not run: `$(`$_.Exception.Message) $outcome.`" -ForegroundColor Red; exit 1 }; " +
+        "if (`$LASTEXITCODE) { Write-Host 'Gitleaks stopped this step (finding redacted above, or scanner error); $outcome.' -ForegroundColor Red; exit `$LASTEXITCODE }"
+}
+
 # ── Update: rebuild this exe from the .ps1 and restart it ─────────────────────
 # The build cannot run inside this process: build-exe.ps1 stops whatever runs the exe it overwrites — this
 # window — and a child whose output this window reads would lose its pipe with it. So a detached helper (its own

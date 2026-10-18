@@ -277,7 +277,7 @@ function Invoke-GitHubActionsSecretProcess {
     $stderrTask = $null
     $started = $false
     try {
-        if (-not $process.Start()) { throw 'Could not start GitHub CLI.' }
+        if (-not (Invoke-ProcessStartWithoutInputBom $process)) { throw 'Could not start GitHub CLI.' }
         $started = $true
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
@@ -311,6 +311,33 @@ function Invoke-GitHubActionsSecretProcess {
         $process.Dispose()
         $startInfo = $null
         $StandardInputText = $null
+    }
+}
+
+# Starts a process whose standard input is redirected without a byte-order mark in front of the
+# data. On .NET Framework, Process.Start creates the input writer with Console.InputEncoding and
+# AutoFlush, which writes that encoding's preamble at once. The exe keeps a (hidden) console, and
+# with Windows' UTF-8 code page (65001) the preamble is EF BB BF: a secret saved through
+# `gh secret set` became EF BB BF + value, which GitHub rejects as "Bad credentials".
+function Invoke-ProcessStartWithoutInputBom {
+    param([System.Diagnostics.Process]$Process)
+    $original = $null
+    try {
+        $current = [Console]::InputEncoding
+        if ($current.CodePage -eq 65001 -and $current.GetPreamble().Length -gt 0) {
+            $original = $current
+            [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+        }
+    } catch {
+        Write-Debug "Console input encoding left unchanged: $($_.Exception.Message)"
+        $original = $null
+    }
+    try {
+        return $Process.Start()
+    } finally {
+        if ($original) {
+            try { [Console]::InputEncoding = $original } catch { Write-Debug "Console input encoding not restored: $($_.Exception.Message)" }
+        }
     }
 }
 
