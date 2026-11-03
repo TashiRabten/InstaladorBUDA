@@ -1,4 +1,4 @@
-function Show-Gui {
+﻿function Show-Gui {
     # WinForms needs an STA thread; pwsh (PS7) defaults to MTA. Relaunch self STA when run as .ps1.
     if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA' -and $script:SelfPath) {
         Start-Process pwsh -ArgumentList @('-STA', '-ExecutionPolicy', 'Bypass', '-File', $script:SelfPath) | Out-Null
@@ -81,7 +81,7 @@ function Show-Gui {
     $updateTips = New-Object System.Windows.Forms.ToolTip
     $updateTips.SetToolTip($btnUpdate, 'Closes this window, rebuilds InstaladorBUDA.exe from InstaladorBUDA.ps1 (build-exe.ps1) in a console, and opens the new exe.')
     $btnUpdate.Add_Click({
-        $running = @($tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
+        $running = @($tabs.TabPages | Where-Object { Test-CockpitTabBusy $_.Tag })
         $question = "Rebuild InstaladorBUDA.exe from InstaladorBUDA.ps1 and restart?`n`n" +
                     "This window closes; a console window shows the build and opens the new InstaladorBUDA when it is done."
         if ($running.Count -gt 0) {
@@ -156,9 +156,11 @@ function Show-Gui {
         }
         $currentName = [string]$currentPage.Text
         $question = "Close $currentName? Its session log will be discarded."
-        if ($currentPage.Tag.IsRunning) { $question += "`r`n`r`nIts running command will be stopped." }
+        if (Test-CockpitTabBusy $currentPage.Tag) { $question += "`r`n`r`nIts running command will be stopped." }
         $answer = [System.Windows.Forms.MessageBox]::Show($question, 'Close session', 'YesNo', 'Warning')
         if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        Close-CockpitTabChat $currentPage.Tag
+        if ($currentPage.Tag.MergeState -and -not $currentPage.Tag.MergeState.Form.IsDisposed) { $currentPage.Tag.MergeState.Form.Close() }
         if ($currentPage.Tag.IsRunning -and $currentPage.Tag.Cleanup) { & $currentPage.Tag.Cleanup }
         $tabs.TabPages.Remove($currentPage)
         $currentPage.Dispose()
@@ -203,7 +205,7 @@ function Show-Gui {
     # sure no background process / event subscription is left orphaned either way.
     $form.Add_FormClosing({
         param($s, $e)
-        $running = @($tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
+        $running = @($tabs.TabPages | Where-Object { Test-CockpitTabBusy $_.Tag })
         # Update asked already (and said which jobs it stops).
         if ($running.Count -gt 0 -and -not $script:closeConfirmed -and -not $guiState.CloseConfirmed) {
             $names = ($running | ForEach-Object { $_.Text }) -join ', '
@@ -316,10 +318,14 @@ function New-JobTab {
     [void](Set-ButtonRow @($btnDispatch) $col3X $rowY 160)
     $rowY += $UI.BoxRowPitch
     [void](Set-ButtonRow @($btnCopy, $btnReleasePlan, $btnRetagDeploy, $btnActions) $col1X $rowY 110)
+    $rowY += $UI.BoxRowPitch
+    $btnRetryLocal = New-Object System.Windows.Forms.Button
+    $btnRetryLocal.Text = 'Retry last failed job'; $btnRetryLocal.Font = $uiFont
+    [void](Set-ButtonRow @($btnRetryLocal) $col1X $rowY 160)
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grp $UI.Pad $y $boxWidth $boxH
     $grp.Anchor = 'Top,Left,Right'
-    $grp.Controls.AddRange(@($btnUpload, $btnDeploy, $btnDispatch, $btnCopy, $btnReleasePlan, $btnRetagDeploy, $btnActions))
+    $grp.Controls.AddRange(@($btnUpload, $btnDeploy, $btnDispatch, $btnCopy, $btnReleasePlan, $btnRetagDeploy, $btnActions, $btnRetryLocal))
     $y += $boxH + $UI.BoxGap
 
     $tips = New-Object System.Windows.Forms.ToolTip
@@ -330,7 +336,7 @@ function New-JobTab {
 
     # ── Publish from an existing run (no rebuild) ──────────────────────────────
     $grpPub = New-Object System.Windows.Forms.GroupBox
-    $grpPub.Text = 'Publish from existing run (no rebuild)'
+    $grpPub.Text = 'Workflow runs: retry or publish'
     $inputX = $UI.BoxPad + $UI.BoxLabelW + 8
 
     $rowY = $UI.BoxTop
@@ -368,10 +374,16 @@ function New-JobTab {
     $btnRelPage.Text = 'Open release'; $btnRelPage.Font = $uiFont
     [void](Set-ButtonRow @($btnPubRun, $btnUndraft, $btnRelPage) $UI.BoxPad $rowY 150)
 
+    $rowY += $UI.BoxRowPitch
+    $btnRerun = New-Object System.Windows.Forms.Button
+    $btnRerun.Text = 'Retry selected run'; $btnRerun.Font = $uiFont
+    $btnRerunFailed = New-Object System.Windows.Forms.Button
+    $btnRerunFailed.Text = 'Retry failed jobs'; $btnRerunFailed.Font = $uiFont
+    [void](Set-ButtonRow @($btnRerun, $btnRerunFailed) $UI.BoxPad $rowY 150)
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpPub $UI.Pad $y $boxWidth $boxH
     $grpPub.Anchor = 'Top,Left,Right'
-    $grpPub.Controls.AddRange(@($lblWf, $cmbWf, $btnLoadRuns, $lblRun, $cmbRun, $btnPubRun, $btnUndraft, $btnRelPage))
+    $grpPub.Controls.AddRange(@($lblWf, $cmbWf, $btnLoadRuns, $lblRun, $cmbRun, $btnPubRun, $btnUndraft, $btnRelPage, $btnRerun, $btnRerunFailed))
     $y += $boxH + $UI.BoxGap
     # Per-tab (not $script:) — concurrent tabs must not share which runs were loaded.
     $tabState = @{ Id = $Number; LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null; CliModels = $null; CliBundles = $null; CliConfirmed = $false }
@@ -443,8 +455,14 @@ function New-JobTab {
     $btnGitCommit.Text = 'Commit'; $btnGitCommit.Font = $uiFont
     $btnGitStatus = New-Object System.Windows.Forms.Button
     $btnGitStatus.Text = 'Status'; $btnGitStatus.Font = $uiFont
+    $btnGitUnstage = New-Object System.Windows.Forms.Button
+    $btnGitUnstage.Text = 'Unstage'; $btnGitUnstage.Font = $uiFont
     $btnGitPush = New-Object System.Windows.Forms.Button
     $btnGitPush.Text = 'Push'; $btnGitPush.Font = $uiFont
+    $btnGitPull = New-Object System.Windows.Forms.Button
+    $btnGitPull.Text = 'Pull'; $btnGitPull.Font = $uiFont
+    $btnMergeTool = New-Object System.Windows.Forms.Button
+    $btnMergeTool.Text = 'Resolve conflicts...'; $btnMergeTool.Font = $uiFont
     $btnCodeCli = New-Object System.Windows.Forms.Button
     $btnCodeCli.Text = 'Agent chat...'; $btnCodeCli.Font = $uiFont
     $gitBtnW = [Math]::Max((Get-ButtonWidth $btnGitAdd 110), (Get-ButtonWidth $btnGitCommit 110))
@@ -474,18 +492,30 @@ function New-JobTab {
     $btnGitCommit.Anchor = 'Top,Right'
 
     $rowY += $UI.MessageH + ($UI.BoxRowPitch - $UI.BtnH)
-    [void](Set-ButtonRow @($btnGitStatus, $btnGitPush, $btnCodeCli) $UI.BoxPad $rowY 110)
+    [void](Set-ButtonRow @($btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull) $UI.BoxPad $rowY 110)
+    $rowY += $UI.BoxRowPitch
+    [void](Set-ButtonRow @($btnMergeTool, $btnCodeCli) $UI.BoxPad $rowY 110)
 
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpGit $UI.Pad $y $boxWidth $boxH
     $grpGit.Anchor = 'Top,Left,Right'
-    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitPush, $btnCodeCli))
+    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnMergeTool, $btnCodeCli))
     $y += $boxH + $UI.BoxGap
-    $tips.SetToolTip($txtGitAdd, 'Paths separated by spaces; put a path with spaces in "double quotes"; . adds every change.')
+    $tips.SetToolTip($txtGitAdd, 'Paths separated by spaces; put a path with spaces in "double quotes"; . adds every change. Unstage takes the same paths out of the next commit.')
     $tips.SetToolTip($btnGitStatus, 'git status of the target app''s repo (read-only, no confirmation).')
+    $tips.SetToolTip($btnGitUnstage, 'git restore --staged of the paths in the Add field: they leave the next commit, and the files on disk stay as they are.')
     $tips.SetToolTip($btnGitCommit, 'git commit with the message above (several lines are fine). Gitleaks scans the staged changes first; a finding stops the commit.')
     $tips.SetToolTip($btnGitPush, 'git push of the current branch to its upstream — never --force. Gitleaks scans the commits the remote does not have yet; a finding stops the push.')
     $tips.SetToolTip($btnCodeCli, 'Choose a local agent, keep separate conversations, and send prompts from this window. The agent can edit the selected project.')
+
+    $prSection = Build-PullRequestSection $uiFont $boxWidth $y
+    $grpPr = $prSection.Group
+    $y += $prSection.Height + $UI.BoxGap
+
+    # ── Suggested changes: a contributor sends a signed bundle, the maintainer verifies it and opens the PR ──
+    $fixSection = Build-FixSuggestionsSection -TabState $tabState -Tabs $Tabs -Font $uiFont -Width $boxWidth -Y $y
+    $grpFix = $fixSection.Group
+    $y += $fixSection.Height + $UI.BoxGap
 
     # ── Bootstrap a project into an empty GitHub repository ─────────────────────
     $grpBootstrap = New-Object System.Windows.Forms.GroupBox
@@ -574,7 +604,7 @@ function New-JobTab {
     $tips.SetToolTip($txtBootstrapScanner, 'Optional. Leave blank to find Gitleaks on PATH or in a sibling gitleaks_* folder.')
     $tips.SetToolTip($btnBootstrapPrepare, 'Sets main and origin, scans for secrets, then stages files. Review the staged paths before publishing.')
     $tips.SetToolTip($btnBootstrapPublish, 'Commits the reviewed prepared tree and pushes main to origin; stops if files changed after preparation.')
-    $tips.SetToolTip($btnBootstrapAddApp, 'Registers a Git-only target in apps.json and selects it, so these bootstrap controls can continue with this project.')
+    $tips.SetToolTip($btnBootstrapAddApp, 'Registers the app in apps.json with every control wired (Git, visibility, Actions page and secrets, agent chat, and the release steps when .github/workflows has a release workflow), selects it, and logs the wiring check.')
     $tips.SetToolTip($btnBootstrapCreateRepo, 'Creates a new empty private GitHub repository from the owner/name field. It does not stage or push project files.')
     $tips.SetToolTip($btnBootstrapActionsSecrets, 'Lists repository-level GitHub Actions secret names and lets you add, replace, or delete a secret for the selected app.')
     $tips.SetToolTip($btnBootstrapGitIgnore, 'Review and edit the .gitignore in the selected project folder. Existing comments and entries are preserved unless you change them.')
@@ -623,8 +653,8 @@ function New-JobTab {
     $y += $UI.StatusH + $UI.Pad
 
     $panel.AutoScrollMinSize = New-Object System.Drawing.Size((Px $UI.ContentWidth), (Px $y))
-    $panel.Controls.AddRange(@($lblTarget, $cmbTarget, $lblVer, $txtVer, $lblCur, $chkPublish, $chkDry, $grp, $grpPub, $grpVis, $grpTask, $grpGit, $grpBootstrap, $grpNotes, $logBox, $status))
-    Enable-CollapsibleSections -Panel $panel -Sections @($grp, $grpPub, $grpVis, $grpTask, $grpGit, $grpBootstrap, $grpNotes) -InitiallyExpanded @('Steps')
+    $panel.Controls.AddRange(@($lblTarget, $cmbTarget, $lblVer, $txtVer, $lblCur, $chkPublish, $chkDry, $grp, $grpPub, $grpVis, $grpTask, $grpGit, $grpPr, $grpFix, $grpBootstrap, $grpNotes, $logBox, $status))
+    Enable-CollapsibleSections -Panel $panel -Sections @($grp, $grpPub, $grpVis, $grpTask, $grpGit, $grpPr, $grpFix, $grpBootstrap, $grpNotes) -InitiallyExpanded @('Steps')
     $panel.Dock = 'Fill'
     $page.Controls.Add($panel)
 
@@ -681,7 +711,7 @@ function New-JobTab {
         $grpGit.Text = if ($branch) { "Git  ->  $($app.name)  [$branch]   $($app.repoRoot)" }
                        elseif (-not $gitMarker) { "Git  ->  $($app.repoRoot)  (not initialized; use bootstrap)" }
                        else { "Git  ->  $($app.repoRoot)  (branch unavailable)" }
-        foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitCommit, $btnGitPush)) { $b.Enabled = [bool]$branch }
+        foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitUnstage, $btnGitCommit, $btnGitPush, $btnGitPull, $btnMergeTool)) { $b.Enabled = [bool]$branch }
     }.GetNewClosure()
 
     $refresh = {
@@ -709,7 +739,10 @@ function New-JobTab {
         $grpNotes.Text = if ($isImageOnly) { 'Release notes (not used for container image builds)' }
                          elseif ($hasWorkflow) { 'Release notes (Deploy / Trigger / Publish use this as the release message)' }
                          else { 'Release notes (no release workflow configured)' }
-        $grpPub.Enabled = $hasGithubRelease
+        $grpPub.Enabled = $hasWorkflow
+        $btnLoadRuns.Enabled = $hasWorkflow
+        $btnRerun.Enabled = $hasWorkflow
+        $btnRerunFailed.Enabled = $hasWorkflow
         $txtNotes.Enabled = $hasGithubRelease
         if ($isImageOnly) {
             $tips.SetToolTip($btnDeploy, 'Pushes the version tag; GitHub builds the Namsel daemon image and Flux watches for the new semver tag.')
@@ -721,9 +754,6 @@ function New-JobTab {
         & $refreshGit
         $bootstrapRepo = ''
         try { $bootstrapRepo = [string](Resolve-AppRepo $app) } catch { }
-        if ([string]::IsNullOrWhiteSpace($bootstrapRepo) -and [string]::IsNullOrWhiteSpace([string]$app.workflow) -and [string]::IsNullOrWhiteSpace([string]$app.tagPrefix) -and $app.releaseRepo) {
-            $bootstrapRepo = [string]$app.releaseRepo
-        }
         if ($txtBootstrapRoot.Text -eq $tabState.BootstrapDefaults.Root) { $txtBootstrapRoot.Text = [string]$app.repoRoot }
         if ($txtBootstrapRepo.Text -eq $tabState.BootstrapDefaults.Repo) { $txtBootstrapRepo.Text = $bootstrapRepo }
         $tabState.BootstrapDefaults = @{ Root = [string]$app.repoRoot; Repo = $bootstrapRepo }
@@ -785,8 +815,12 @@ function New-JobTab {
             return
         }
         if (-not $noConfirm -and -not $tabState.CliConfirmed) {
-            $msg = "This will run, in`n$repoRoot :`n`n" + ($commands -join "`n") + "`n`nContinue?"
-            $ans = [System.Windows.Forms.MessageBox]::Show($msg, "Confirm — $label", 'YesNo', 'Question')
+            # A short question; the commands go to the log, read there before answering. Listed in the dialog,
+            # a pull request's seventeen long lines made it taller than the screen.
+            & $appendLog "To run — $label ($($commands.Count) commands, in $repoRoot):"
+            $commands | ForEach-Object { & $appendLog "    $_" }
+            $msg = "$label`n`n$($commands.Count) commands in $repoRoot, listed in the log.`n`nContinue?"
+            $ans = [System.Windows.Forms.MessageBox]::Show($msg, 'Confirm', 'YesNo', 'Question')
             if ($ans -ne 'Yes') { & $appendLog "Cancelled: $label"; return }
         }
 
@@ -800,6 +834,8 @@ function New-JobTab {
             return
         }
 
+        $tabState.LastJob = @{ Commands = @($commands); Label = $label; Root = $repoRoot; FollowUp = @($followUp) }
+        $tabState.LastExitCode = $null
         # Write the commands to a temp .ps1 and run THAT. Passing them inline via -Command
         # double-parses the string, so any command that contains its OWN quotes (e.g. a
         # WriteAllText("...") + FromBase64String('...') release note) collides and fails to
@@ -809,7 +845,7 @@ function New-JobTab {
         $lines = @(
             # $__since: when this step started, so a follow-up can tell the run it caused
             # from older ones. $__code: the job's exit code, which a follow-up may set.
-            "`$__since = [datetime]::UtcNow; `$__code = 0"
+            "`$ErrorActionPreference = 'Stop'; `$__since = [datetime]::UtcNow; `$__code = 0"
             # The log reads the job's output as UTF-8 (accents in notes, paths, git output).
             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"
             "Set-Location -LiteralPath '$rr'"
@@ -819,7 +855,7 @@ function New-JobTab {
             # this a failing command printed its error, the job went on to "Done." and exited 0,
             # and the log said "finished (OK)" (2026-10-07: the upload script threw, the run was OK).
             # An if statement does not touch $LASTEXITCODE, so a follow-up still reads the last one.
-            foreach ($c in $commands) { $c; 'if ($LASTEXITCODE -and -not $__code) { $__code = $LASTEXITCODE }' }
+            foreach ($c in $commands) { $c; 'if ($LASTEXITCODE) { exit $LASTEXITCODE }' }
         ) + @($followUp | Where-Object { $_ }) + @(
             "Write-Host ''"
             "Write-Host 'Done.' -ForegroundColor Green"
@@ -850,7 +886,13 @@ function New-JobTab {
         $tabState.Proc = $proc
         & $setTabStatus 'running...'
         & $appendLog "=== $label ==="
-        [void]$proc.Start()
+        try { [void]$proc.Start() }
+        catch {
+            $tabState.IsRunning = $false; $tabState.Proc = $null; $tabState.LastExitCode = -1
+            $proc.Dispose(); Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+            & $setTabStatus 'failed to start'; & $appendLog $_.Exception.Message
+            throw
+        }
 
         # The output is read on the UI thread by a timer, not by Register-ObjectEvent or
         # the process's DataReceived events. PowerShell runs an event -Action only when
@@ -890,6 +932,7 @@ function New-JobTab {
             if ($job.Streams[0].Done -and $job.Streams[1].Done -and $job.Proc.HasExited) {
                 $job.Timer.Stop(); $job.Timer.Dispose()
                 $code = $job.Proc.ExitCode
+                $job.TabState.LastExitCode = $code
                 & $job.Log $(if ($code -eq 0) { '--- finished (OK) ---' } else { "--- finished (exit code $code) ---" })
                 $job.TabState.IsRunning = $false
                 & $job.SetStatus $(if ($code -eq 0) { 'done' } else { "failed ($code)" })
@@ -940,28 +983,19 @@ function New-JobTab {
             throw 'GitHub repository must be owner/name, for example TashiRabten/ScanBUDA.'
         }
         $repoRoot = (Resolve-Path -LiteralPath $rawRoot).Path
-        $newApp = [pscustomobject][ordered]@{
-            name = $name
-            _comment = 'Git controls and GitHub repository bootstrap; no release workflow configured yet.'
-            repoRoot = $repoRoot
-            releaseRepo = $githubRepo
-            manageVisibility = $false
-            tagPrefix = ''
-            workflow = ''
-            releaseBranch = ''
-            versionFromGitTag = ''
-            uploadScript = $null
-            models = @()
-            dispatchInputs = @()
-        }
-        $added = $appRegistry.Add($newApp)
+        # The whole entry in one step: own repo, visibility, and the release fields read from the
+        # project's release workflow (Build-AppRegistryEntry, shared with the CLI add-app command).
+        $added = $appRegistry.Add((Build-AppRegistryEntry -Name $name -RepoRoot $repoRoot -GitHubRepo $githubRepo))
         foreach ($targetPage in @($Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.Controls -and $_.Tag.Controls.Target })) {
             $targetControl = $targetPage.Tag.Controls.Target
             if (-not $targetControl.Items.Contains($added.name)) { [void]$targetControl.Items.Add($added.name) }
         }
         $cmbTarget.SelectedItem = $added.name
         $tabState.LastAddedApp = $added.name
-        & $appendLog "Registered '$($added.name)' for $githubRepo. It is selected; run Preflight in this group to continue the existing bootstrap."
+        $tabState.LastAddedWiring = @(Get-AppWiringReport $added)
+        $releaseText = if ($added.workflow) { "release workflow $($added.workflow)" } else { 'no release workflow (Git-only)' }
+        & $appendLog "Registered '$($added.name)' for $githubRepo with $releaseText. It is selected in every session:"
+        foreach ($line in @(Format-AppWiringReport $tabState.LastAddedWiring)) { & $appendLog $line }
         return $added
     }.GetNewClosure()
 
@@ -996,9 +1030,6 @@ function New-JobTab {
         catch {
             $repo = ''
             Write-Debug "Could not resolve the Actions-secrets repository: $($_.Exception.Message)"
-        }
-        if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -and -not $app.workflow -and -not $app.tagPrefix) {
-            $repo = [string]$app.releaseRepo
         }
         if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
             & $appendLog "The selected app '$($app.name)' has no GitHub owner/name repository."; $tabState.LastActionsSecretsResult = 'failed'; return
@@ -1056,6 +1087,7 @@ function New-JobTab {
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app -or -not $lblVis) { return }
         $repoSlug = Resolve-AppRepo $app
+        $tabState.VisibilityRepo = [string]$repoSlug
         if (-not $repoSlug) { $lblVis.Text = 'no git remote found'; $lblVis.ForeColor = [System.Drawing.Color]::Firebrick; return }
         if (-not $HasGh) { $lblVis.Text = 'gh not found - cannot check'; $lblVis.ForeColor = [System.Drawing.Color]::Firebrick; return }
         $vis = Get-RepoVisibility $repoSlug
@@ -1164,6 +1196,7 @@ function New-JobTab {
     }.GetNewClosure())
     $btnBootstrapAddApp.Add_Click({
         $tabState.LastAddedApp = $null
+        $tabState.LastAddedWiring = $null
         $tabState.LastAddAppError = $null
         try { [void](& $registerApp) }
         catch {
@@ -1203,7 +1236,11 @@ function New-JobTab {
             & $appendLog "Copied last command to clipboard."
         } else { & $appendLog "No command yet — click a step first." }
     }.GetNewClosure())
-    $btnActions.Add_Click({ Start-Process $ActionsUrl | Out-Null }.GetNewClosure())
+    $btnActions.Add_Click({
+        $actionsPage = Get-AppActionsUrl (Get-App $cmbTarget.SelectedItem)
+        Start-Process $actionsPage | Out-Null
+        & $appendLog "Opened Actions page: $actionsPage"
+    }.GetNewClosure())
 
     # ── Repo visibility handlers ─────────────────────────────────────────────
     $btnMakePublic.Add_Click({
@@ -1245,6 +1282,37 @@ function New-JobTab {
             }
         }
     }.GetNewClosure())
+    Connect-PullRequestSection $prSection $cmbTarget $run $appendLog
+    $retryRun = {
+        param([bool]$failedOnly)
+        $app = Get-App $cmbTarget.SelectedItem
+        try {
+            if ($cmbRun.SelectedIndex -lt 0) { throw 'Load runs and select the failed run first.' }
+            $selected = $tabState.LoadedRuns[$cmbRun.SelectedIndex]
+            $commands = Build-RerunCommands (Resolve-AppRepo $app) "$($selected.databaseId)" $failedOnly
+            & $run $commands "Retry workflow run $($selected.databaseId) (failed jobs only: $failedOnly)" $true $app.repoRoot
+        } catch { & $appendLog "Retry stopped: $($_.Exception.Message)" }
+    }.GetNewClosure()
+    $btnRetryLocal.Add_Click({
+        if ($tabState.IsRunning) { & $appendLog 'Wait for the active job to finish.'; return }
+        $last = $tabState.LastJob
+        $selectedApp = Get-App $cmbTarget.SelectedItem
+        if ($last -and $last.Root -ne $selectedApp.repoRoot) { & $appendLog "Select the original target at $($last.Root) before retrying its job."; return }
+        if (-not $last -or $null -eq $tabState.LastExitCode -or $tabState.LastExitCode -eq 0) { & $appendLog 'No failed job to retry in this session.'; return }
+        if (($last.Commands -join "`n") -match '(?m)^git .+ tag ') {
+            Assert-CockpitButtonReady $btnLoadRuns 'Load runs is unavailable.'
+            $btnLoadRuns.PerformClick()
+            $app = Get-App $cmbTarget.SelectedItem; $tag = "$($app.tagPrefix)$($txtVer.Text.Trim())"
+            for ($i = 0; $i -lt $tabState.LoadedRuns.Count; $i++) {
+                if ($tabState.LoadedRuns[$i].headBranch -eq $tag) { $cmbRun.SelectedIndex = $i; & $retryRun $false; return }
+            }
+            & $startTag $false
+            return
+        }
+        & $run $last.Commands $last.Label $true $last.Root $last.FollowUp
+    }.GetNewClosure())
+    $btnRerun.Add_Click({ & $retryRun $false }.GetNewClosure())
+    $btnRerunFailed.Add_Click({ & $retryRun $true }.GetNewClosure())
     $btnLoadRuns.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
@@ -1261,12 +1329,8 @@ function New-JobTab {
             $state = if ($r.conclusion) { $r.conclusion } else { $r.status }
             [void]$cmbRun.Items.Add(("{0}  [{1}]  {2}  ({3})" -f $when, $state, $r.displayTitle, $r.headBranch))
         }
-        $okIdx = -1
-        for ($i = 0; $i -lt $tabState.LoadedRuns.Count; $i++) {
-            if ($tabState.LoadedRuns[$i].conclusion -eq 'success') { $okIdx = $i; break }
-        }
-        $cmbRun.SelectedIndex = if ($okIdx -ge 0) { $okIdx } else { 0 }
-        & $appendLog "Loaded $($cmbRun.Items.Count) run(s); newest successful preselected."
+        $cmbRun.SelectedIndex = 0
+        & $appendLog "Loaded $($cmbRun.Items.Count) run(s); newest preselected. Retry uses the original commit and inputs."
     }.GetNewClosure())
     $btnPubRun.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
@@ -1321,15 +1385,20 @@ function New-JobTab {
         if (-not $app) { return }
         & $run (Build-GitStatusCommands $app) "git status ($($app.name))" $false $app.repoRoot $null $refreshGit $true
     }.GetNewClosure())
-    $btnGitAdd.Add_Click({
+    # Add and Unstage read the same path field and show the short status after; only the git verb differs.
+    $runGitPaths = {
+        param([string]$Verb, [string]$EmptyHint)
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
-        $cmds = Build-GitAddCommands $app $txtGitAdd.Text
-        if (@($cmds).Count -eq 0) {
-            & $appendLog 'Type what to add first: paths separated by spaces, "quoted" when they have spaces, or . for every change.'
-            return
-        }
-        & $run $cmds "git add ($($app.name))" $false $app.repoRoot (Build-GitAfterLines $app 'add')
+        $cmds = Build-GitPathCommands $app $txtGitAdd.Text $Verb
+        if (@($cmds).Count -eq 0) { & $appendLog $EmptyHint; return }
+        & $run $cmds "git $Verb ($($app.name))" $false $app.repoRoot (Build-GitAfterLines $app 'add')
+    }.GetNewClosure()
+    $btnGitAdd.Add_Click({
+        & $runGitPaths 'add' 'Type what to add first: paths separated by spaces, "quoted" when they have spaces, or . for every change.'
+    }.GetNewClosure())
+    $btnGitUnstage.Add_Click({
+        & $runGitPaths 'restore --staged' 'Type what to unstage first, in the Add field: paths separated by spaces, "quoted" when they have spaces, or . for everything staged.'
     }.GetNewClosure())
     # Commit and Push scan with Gitleaks first (Build-GitSecretScanCommand). With no scanner found they stop
     # here: a missing Gitleaks must not turn into an unscanned commit or push.
@@ -1364,18 +1433,45 @@ function New-JobTab {
         $cmds = @(Build-GitSecretScanCommand $app $scanner 'push') + @(Build-GitPushCommands $app)
         & $run $cmds "git push ($($app.name), $branch)" $false $app.repoRoot (Build-GitAfterLines $app 'push') $refreshGit
     }.GetNewClosure())
+    $btnGitPull.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        $commands = Build-GitPullCommands $app.repoRoot
+        & $run $commands "Pull and merge remote changes ($($app.name)); use Resolve conflicts if needed" $false $app.repoRoot $null $refreshGit
+    }.GetNewClosure())
+    $btnMergeTool.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        try { Show-GitMergeTool $app $run $resolveSecretScanner $page.FindForm() $tabState }
+        catch { & $appendLog "Merge tool: $($_.Exception.Message)" }
+    }.GetNewClosure())
     $btnCodeCli.Add_Click({
+        # A CLI code-cli-terminal request that opens the chat leaves this for it. Take it now, so a click
+        # that cannot open the chat does not leave it waiting for the next one.
+        $terminalRequest = $tabState.PendingAgentTerminal
+        $tabState.PendingAgentTerminal = $null
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { & $appendLog 'Select an app before opening agent chat.'; return }
+        # The chat is modeless: one per session tab. A second click brings it back to the front.
+        $openChat = $tabState.AgentChat
+        if ($openChat -and -not $openChat.Dialog.IsDisposed) {
+            if ($openChat.Dialog.WindowState -eq 'Minimized') { $openChat.Dialog.WindowState = 'Normal' }
+            $openChat.Dialog.Activate()
+            & $appendLog "Agent chat is already open for $($openChat.RepositoryRoot)."
+            return
+        }
         if ($tabState.IsRunning) { & $appendLog 'Wait until this session running job finishes before opening agent chat.'; return }
         if (-not $app.repoRoot -or -not (Test-Path -LiteralPath $app.repoRoot -PathType Container)) {
             & $appendLog "Project folder is missing for $($app.name)."; return
         }
         try {
             $repoRoot = (Resolve-Path -LiteralPath $app.repoRoot).Path
-            $result = Show-CodeCliDialog -AppName ([string]$app.name) -RepositoryRoot $repoRoot -Owner ($page.FindForm())
-            if ($result -and $result.Used) { & $appendLog "Opened the in-app agent conversation for $($app.name)." }
-            else { & $appendLog 'Agent conversation closed.' }
+            $result = Show-CodeCliDialog -AppName ([string]$app.name) -RepositoryRoot $repoRoot -Owner ($page.FindForm()) `
+                -CockpitState $tabState -OpenTerminal:([bool]$terminalRequest) -TerminalAgent ([string]$terminalRequest.Agent)
+            if ($result -and $result.Used) {
+                & $appendLog "Opened the in-app agent conversation for $($app.name)."
+                # A closure made in this handler sees only its locals: copy what it uses into them.
+                $chatName = [string]$app.name; $logClosed = $appendLog
+                $result.Dialog.Add_FormClosed({ & $logClosed "Agent conversation for $chatName closed." }.GetNewClosure())
+            }
         } catch {
             & $appendLog "Agent conversation stopped: $($_.Exception.Message)"
         }
@@ -1384,15 +1480,17 @@ function New-JobTab {
     $tabState.AppendLog = $appendLog
     $tabState.Controls = @{
         Target = $cmbTarget; Version = $txtVer; Publish = $chkPublish; DryRun = $chkDry; Notes = $txtNotes
+        PrBase = $prSection.Controls.Base; PrHead = $prSection.Controls.Head; PrTitle = $prSection.Controls.Title; PrBody = $prSection.Controls.Body; PrNumber = $prSection.Controls.Number
         Workflow = $cmbWf; Run = $cmbRun; Task = $cmbTask; GitAdd = $txtGitAdd; GitMessage = $txtGitMsg
         BootstrapName = $txtBootstrapName; BootstrapRoot = $txtBootstrapRoot; BootstrapRepo = $txtBootstrapRepo; BootstrapMessage = $txtBootstrapMessage; BootstrapScanner = $txtBootstrapScanner
         Log = $logBox; Visibility = $lblVis
         Buttons = @{
             Upload = $btnUpload; Deploy = $btnDeploy; RetagDeploy = $btnRetagDeploy; ReleasePlan = $btnReleasePlan
             Dispatch = $btnDispatch; Copy = $btnCopy; Actions = $btnActions
+            RetryLast = $btnRetryLocal; Rerun = $btnRerun; RerunFailed = $btnRerunFailed; PrList = $prSection.Buttons.List; PrCreate = $prSection.Buttons.Create; PrMerge = $prSection.Buttons.Merge
             LoadRuns = $btnLoadRuns; PublishRun = $btnPubRun; Undraft = $btnUndraft; ReleasePage = $btnRelPage
             MakePublic = $btnMakePublic; MakePrivate = $btnMakePrivate; Task = $btnTask
-            GitAdd = $btnGitAdd; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
+            GitPull = $btnGitPull; MergeTool = $btnMergeTool; GitAdd = $btnGitAdd; GitUnstage = $btnGitUnstage; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
             AddApp = $btnBootstrapAddApp; CreateRepo = $btnBootstrapCreateRepo; ActionsSecrets = $btnBootstrapActionsSecrets; GitIgnore = $btnBootstrapGitIgnore; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
         }
     }

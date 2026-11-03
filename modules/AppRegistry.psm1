@@ -3,6 +3,18 @@ class BudaAppRegistry {
     [object]$Config
     [object[]]$Apps
 
+    # Every field some control reads. Add rejects an entry without one of them, so an app
+    # registered from the GUI or the CLI never comes out with a control left unwired.
+    static [string[]]$RequiredFields = @('name', 'repoRoot', 'githubRepo', 'releaseRepo', 'manageVisibility', 'tagPrefix',
+        'workflow', 'releaseBranch', 'versionFromGitTag', 'uploadScript', 'models', 'dispatchInputs')
+
+    static [string[]] MissingFields([object]$app) {
+        if ($null -eq $app) { return [BudaAppRegistry]::RequiredFields }
+        if ($app -is [System.Collections.IDictionary]) { $names = @($app.Keys) }
+        else { $names = @($app.PSObject.Properties | ForEach-Object { $_.Name }) }
+        return @([BudaAppRegistry]::RequiredFields | Where-Object { $names -notcontains $_ })
+    }
+
     BudaAppRegistry([string]$path) {
         $this.Path = $path
         $this.Load()
@@ -26,6 +38,9 @@ class BudaAppRegistry {
     [object] Add([object]$app) {
         if (-not $app -or [string]::IsNullOrWhiteSpace([string]$app.name)) { throw 'App name is required.' }
         if ($this.Get([string]$app.name)) { throw "An app named '$($app.name)' is already registered." }
+        $missing = [BudaAppRegistry]::MissingFields($app)
+        if ($missing.Count -gt 0) { throw "The new app entry is missing: $($missing -join ', '). Build it with Build-AppRegistryEntry." }
+        if ([string]$app.githubRepo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'githubRepo must be owner/name.' }
         if (-not (Test-Path -LiteralPath $this.Path -PathType Leaf)) { throw "App registry not found: $($this.Path)" }
 
         # Insert only the new object into the apps array. Serializing the whole config would

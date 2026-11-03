@@ -1,4 +1,4 @@
-function Get-LatestPublishedVersion {
+﻿function Get-LatestPublishedVersion {
     param($app)
     if (-not $app.tagPrefix) { return $null }
     $releaseRepo = if ($app.releaseRepo) { [string]$app.releaseRepo } else { [string]$ReleaseRepo }
@@ -191,8 +191,20 @@ function Build-TagCommands {
     if ($ReplaceExistingTag -and -not $tagState.RemoteTagExists) {
         throw "Remote tag $tag does not exist, so there is no existing tag to move."
     }
+    if (-not $ReplaceExistingTag -and $tagState.LocalTagExists -and -not $tagState.RemoteTagExists -and -not $tagState.ReleaseExists) {
+        $localCommit = (& git -C $repo rev-parse "refs/tags/$tag^{}").Trim()
+        $headCommit = (& git -C $repo rev-parse HEAD).Trim()
+        if ($localCommit -ne $headCommit) { throw "Local tag $tag points at another commit; inspect it before retrying." }
+        return @("git -C `"$repo`" push origin refs/tags/$tag")
+    }
     if (-not $ReplaceExistingTag -and ($tagState.LocalTagExists -or $tagState.RemoteTagExists -or $tagState.ReleaseExists)) {
         throw "Tag or release $tag already exists. Choose a new version, or explicitly use retag-deploy with replaceExistingTag:true and confirm:true."
+    }
+    if ($ReplaceExistingTag -and [string]::IsNullOrWhiteSpace($ReleaseNotes) -and $Bundles -eq 'all') {
+        $headObject = (& git -C $repo rev-parse HEAD).Trim()
+        if ($headObject -eq $tagState.RemoteTagObject) {
+            throw "Tag $tag already points at HEAD. Use Load runs -> Retry selected run to rebuild the same commit, or Trigger workflow."
+        }
     }
     $tagOption = if ($ReplaceExistingTag) { '-f ' } else { '' }
     $pushOption = if ($ReplaceExistingTag) { "--force-with-lease=refs/tags/${tag}:$($tagState.RemoteTagObject) " } else { '' }
@@ -383,8 +395,23 @@ function Get-RepoSlug {
     return $null
 }
 
-# The repo whose Actions runs hold this app's build (always the app's own repo).
-function Resolve-AppRepo { param($app) Get-RepoSlug $app.repoRoot }
+# The repo whose Actions runs hold this app's build (always the app's own repo): the origin
+# remote, else the entry's githubRepo (an app registered before its first push), else the
+# releaseRepo of a Git-only target (older entries written before githubRepo existed). The
+# remote counts only when the folder is its own repository: git -C on a folder without .git
+# answers with the remote of whatever repository encloses it.
+function Resolve-AppRepo {
+    param($app)
+    if (-not $app) { return $null }
+    $root = [string]$app.repoRoot
+    if ($root -and (Test-Path -LiteralPath (Join-Path $root '.git'))) {
+        $slug = Get-RepoSlug $root
+        if ($slug) { return $slug }
+    }
+    if ($app.githubRepo) { return [string]$app.githubRepo }
+    if (-not $app.workflow -and -not $app.tagPrefix -and $app.releaseRepo) { return [string]$app.releaseRepo }
+    return $null
+}
 
 # The repo that hosts this app's RELEASES (GlossarioBUDA for the BUDA apps; the app's
 # own repo for the standalone utilities). Explicit apps.json releaseRepo wins; else
@@ -522,12 +549,25 @@ function Split-GitPaths {
     return ,$out
 }
 
-function Build-GitAddCommands {
-    param($app, [string]$Paths)
+# Add and Unstage read the same field. Unstage is `git restore --staged`: the paths leave the next commit (their
+# index entry goes back to HEAD's) and the files on disk stay as they are. Without it a path staged by mistake
+# (`.` picking up a backup or a shortcut) could only leave the commit outside the cockpit.
+function Build-GitPathCommands {
+    param($app, [string]$Paths, [ValidateSet('add', 'restore --staged')][string]$Verb)
     $list = Split-GitPaths $Paths
     if ($list.Count -eq 0) { return @() }
     $quoted = ($list | ForEach-Object { Quote-PS $_ }) -join ' '
-    return @("git -C $(Quote-PS $app.repoRoot) add -- $quoted")
+    return @("git -C $(Quote-PS $app.repoRoot) $Verb -- $quoted")
+}
+
+function Build-GitAddCommands {
+    param($app, [string]$Paths)
+    return Build-GitPathCommands $app $Paths 'add'
+}
+
+function Build-GitUnstageCommands {
+    param($app, [string]$Paths)
+    return Build-GitPathCommands $app $Paths 'restore --staged'
 }
 
 # The message goes through a file (git commit -F), base64 in the command list like the release note in
@@ -811,7 +851,7 @@ function Invoke-FollowUp {
         $event  = if ($Kind -eq 'push') { 'push' } else { 'workflow_dispatch' }
         $branch = if ($Kind -eq 'push') { $Tag } else { '' }
         $run = Watch-WorkflowRun -Repo $AppRepo -Workflow $Workflow -Event $event -Branch $branch -Since $Since -StatusLines:$StatusLines
-        if (-not $run) { return 0 }
+        if (-not $run) { return 1 }
         if ($run.Conclusion -ne 'success') { $code = 1 }
         if ($ImageOnly) {
             if ($code -eq 0) {

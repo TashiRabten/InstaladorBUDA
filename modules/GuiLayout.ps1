@@ -1,4 +1,4 @@
-# ── GUI layout ───────────────────────────────────────────────────────────────
+﻿# ── GUI layout ───────────────────────────────────────────────────────────────
 # Every position and size in the GUI is in design pixels — pixels at 100% Windows
 # scaling — and goes through Px, which scales it to the screen's real DPI once. The exe
 # is DPI-aware so its text is sharp, which means Windows no longer enlarges the window
@@ -36,17 +36,19 @@ $UI = @{
     HiddenTabHeader = 1
     SectionHeaderH = 26
     CollapsedSectionH = 34
+    Merge = @{ Width=1200; Height=700; MinWidth=850; MinHeight=450; TopH=38; ButtonH=50; StatusH=48; FontSize=10 }
     AgentConfig = @{
-        Width = 720; Height = 390
-        List = @{ X = 16; Y = 18; Width = 180; Height = 300 }
+        Width = 720; Height = 426
+        List = @{ X = 16; Y = 18; Width = 180; Height = 336 }
         LabelX = 214; LabelWidth = 470; LabelHeight = 22; FieldWidth = 470
         NameLabelY = 24; NameFieldY = 48
         CommandLabelY = 78; CommandFieldY = 102; CommandFieldWidth = 352
         ArgumentsLabelY = 132; ArgumentsFieldY = 156
         BrowseX = 580; BrowseY = 104; BrowseWidth = 104; BrowseHeight = 28
         ModeLabelX = 214; ModeY = 186; ModeLabelWidth = 112; ModeLabelHeight = 26; ModeX = 330; ModeWidth = 354
-        HelpX = 214; HelpY = 222; HelpWidth = 470; HelpHeight = 44
-        ButtonsY = 328; AddX = 16; AddWidth = 92; DeleteX = 112; DeleteWidth = 84
+        PermissionY = 220; ModelY = 254
+        HelpX = 214; HelpY = 288; HelpWidth = 470; HelpHeight = 62
+        ButtonsY = 364; AddX = 16; AddWidth = 92; DeleteX = 112; DeleteWidth = 84
         HelpButtonX = 210; HelpButtonWidth = 92
         SaveX = 474; SaveWidth = 100; CancelX = 584; CancelWidth = 100; ButtonHeight = 32
     }
@@ -58,8 +60,9 @@ $UI = @{
     AgentChat = @{
         Width = 760; Height = 620; MinWidth = 700; MinHeight = 520
         ProjectX = 18; ProjectY = 10; ProjectWidth = 724; ProjectHeight = 28
-        AgentLabelX = 18; AgentLabelY = 46; AgentLabelWidth = 65; AgentX = 86; AgentWidth = 420
-        ConfigureX = 518; ConfigureY = 44; ConfigureWidth = 224; ConfigureHeight = 30
+        AgentLabelX = 18; AgentLabelY = 46; AgentLabelWidth = 65; AgentX = 86; AgentWidth = 288
+        TerminalX = 386; TerminalWidth = 152
+        ConfigureX = 550; ConfigureY = 44; ConfigureWidth = 192; ConfigureHeight = 30
         ConversationLabelX = 18; ConversationLabelY = 84; ConversationLabelWidth = 88
         ConversationX = 108; ConversationWidth = 430; NewConversationX = 550; NewConversationWidth = 192
         RowY = 82; RowHeight = 30
@@ -67,6 +70,7 @@ $UI = @{
         PromptLabelX = 18; PromptLabelY = 432; PromptLabelWidth = 724; PromptLabelHeight = 24
         PromptX = 18; PromptY = 458; PromptWidth = 724; PromptHeight = 94
         SendX = 18; StopX = 160; ActionY = 570; SendWidth = 132; StopWidth = 100
+        ProgressX = 272; ProgressWidth = 90; ProgressHeight = 16; StatusX = 372; StatusWidth = 262
         CloseX = 642; CloseWidth = 100; ActionHeight = 34
     }
     WindowWidth  = 780    # main window, before it is capped to the screen

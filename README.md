@@ -1,4 +1,4 @@
-# InstaladorBUDA
+﻿# InstaladorBUDA
 
 A small **standalone deployment cockpit** for the BUDA apps. Pick a target app and a
 version, then **Upload models**, **Deploy (push tag)**, **Trigger workflow**, or
@@ -16,9 +16,10 @@ The main window's operation groups are also expandable sections: click a heading
 show its controls. This applies to the GitHub groups as well, keeping the work area compact.
 
 It is **fully config-driven**. The app list lives in [`apps.json`](apps.json) next to the
-program. Use **Add app** in the GitHub bootstrap group to register a Git-only app and then
-continue with the existing preflight / prepare / publish flow. Apps with release workflows
-can still be added by editing `apps.json` directly.
+program. Use **Add app** in the GitHub bootstrap group (or the `add-app` CLI command) to
+register an app in one step: it writes the whole entry, reading the release fields from the
+project's `.github/workflows`, and logs a check of every control it wired. The checklist of
+what "fully wired" means is in [`MDs/adicionar-app.md`](MDs/adicionar-app.md).
 
 ---
 
@@ -147,21 +148,59 @@ remove them. The CLI opens the same visible manager and returns a scheduled ackn
 
 The **Agent chat...** button in the Git group opens an in-app prompt window for the selected
 app. Choose an agent profile and a conversation from their dropdowns, type a prompt, and
-send it without leaving the installer. Starter profiles for three common coding CLIs are
+send it without leaving the installer. The window does not block the cockpit: you can keep
+working in the main window while it is open, and clicking **Agent chat...** again brings it
+back to the front. A running agent counts as a running job when the cockpit or its session
+closes, and closing the cockpit closes the chat and stops its agent. Starter profiles for three common coding CLIs are
 created on first use; **Help...** in **Configure agents** lists their values and sign-in
 requirements. **Configure agents...** adds profiles, chooses a
 local `.exe`, `.cmd` or `.bat` with Browse, and sets arguments plus whether the prompt is
 passed as an argument or through standard input. Standard input is the default for new
 profiles; argument mode places the prompt in the process command line and is refused for
 `.cmd`/`.bat` commands, which Windows re-parses. Commands are looked up on `PATH`, the saved
-user/system `PATH`, and npm's global folder. **Stop** ends the agent and any process it
-started. Conversations stay local to this Windows user and are protected
-with Windows user encryption; the executable uses its existing local sign-in. Each first send
-in a conversation asks before allowing the agent to modify project files. The CLI can open
-the same chat window:
+user/system `PATH`, and npm's global folder.
+
+Each profile also has a **Permission** and a **Model**. The chat runs the CLI without a
+terminal, so no one can answer its permission prompts; Permission decides up front:
+**Full access (no prompts)** (the default) lets the agent edit files and run commands,
+**Edit files only** refuses commands that need approval, and **Read-only** changes nothing.
+For the three starter CLIs these become their own flags (for example Full access is
+`--permission-mode bypassPermissions` for one and `--dangerously-bypass-approvals-and-sandbox`
+for another); other CLIs take such flags in Arguments. **Model** is passed as the CLI's model
+option; leave it empty for the CLI's default. A flag typed in Arguments takes precedence.
+
+The embedded chat disables automatic account connectors for the CLI that supports the
+`apps` feature, matching SuiteBUDA's default and avoiding repeated HTTP response-decoding
+errors. This affects only chat launches; explicit MCP servers, global configuration and
+**Open in terminal** keep their existing behavior. To opt in, set **Arguments** to
+`--enable apps exec -` in **Configure agents...**. An explicit `apps` feature flag or
+`features.apps` configuration argument takes precedence. Not yet verified in the app.
+
+While an agent works, its steps appear in the conversation as they happen (tool calls and
+progress lines, indented under **Agent**), a progress bar runs, and the status line shows the
+elapsed time and how long it has been quiet. The steps are kept with the reply. **Stop**
+ends the agent and any process it started. Conversations stay local to this Windows user and
+are protected with Windows user encryption; the executable uses its existing local sign-in.
+The first send in a conversation states what the agent may do and asks to continue. Not yet
+verified in the app with a real agent run. The CLI can open the same chat window:
 
 ```powershell
 & .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"code-cli","target":"MyApp","confirm":true}'
+```
+
+The chat cannot run a CLI's interactive commands, so **Open in terminal** (beside **Configure
+agents...**) starts the selected agent's CLI interactively in a terminal window of its own, in
+the project folder, without a prompt. Use it to sign in (`/login`) and for the CLI's own slash
+commands (`/mcp`, `/model` and others), then come back to the chat. The session gets the
+profile's Permission and Model flags (Kiro starts as `kiro-cli chat`) but not its Arguments,
+which are written for the chat's non-interactive runs. The terminal runs through `cmd /k`, so
+the window stays open when the CLI exits and a command such as `codex login` or
+`kiro-cli login` can be typed there. The button is unavailable while the chat runs a prompt.
+The CLI clicks the same button, opening the chat first when it is closed; `agent` picks the
+profile by name (default: the selected one). Not yet verified in the app.
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"code-cli-terminal","target":"MyApp","agent":"Claude Code","confirm":true}'
 ```
 
 The **Project folder** Browse button in **Add app** and the executable Browse button use
@@ -184,10 +223,10 @@ tag after the preflight:
 Available actions mirror the cockpit: `upload`, `deploy`, `dispatch`, `load-runs`,
 `retag-deploy` (with `replaceExistingTag:true`), `publish-run` (with `runId`), `undraft`,
 `make-public`, `make-private`, `open-actions`,
-`open-release`, `copy-command`, `task` (with `taskName`), `git-status`, `git-add`,
+`open-release`, `copy-command`, `task` (with `taskName`), `git-status`, `git-add`, `git-unstage`,
 `git-commit`, `git-push`, and `update`. Actions that change a repository or publish work
 (`upload`, `deploy`, `retag-deploy`, `dispatch`, `publish-run`, `undraft`, visibility changes, `git-add`,
-`git-commit`, `git-push`, and `task`) require `"confirm":true`. Set `dryRun:true` to show
+`git-unstage`, `git-commit`, `git-push`, and `task`) require `"confirm":true`. Set `dryRun:true` to show
 commands in the visible log without running them. CLI output is one JSON response per
 command; failures return a nonzero exit code. If the GUI is closed, commands other than
 `start` return a clear error.
@@ -199,6 +238,14 @@ For example, stage, commit, and push selected files through the same Git panel c
 & .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-add","confirm":true,"waitMs":30000}'
 & .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-commit","confirm":true,"waitMs":30000}'
 & .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-push","confirm":true,"waitMs":30000}'
+```
+
+A path staged by mistake leaves the next commit with `git-unstage`, which reads the same `gitPaths`
+field (the file on disk is not touched):
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"configure","session":1,"gitPaths":"apps.json notes.bak"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-unstage","confirm":true,"waitMs":30000}'
 ```
 
 To initialize a local project against an existing, empty GitHub repository, use the
@@ -218,7 +265,7 @@ $publish = $base + @{ command = 'bootstrap-publish'; commitMessage = 'Initial pr
 & .\InstaladorBUDA.exe -Cli ($publish | ConvertTo-Json -Compress)
 ```
 
-Register a Git-only target from the current session, then continue using those same bootstrap
+Register a target from the current session, then continue using those same bootstrap
 fields and controls:
 
 ```powershell
@@ -229,10 +276,15 @@ fields and controls:
 ```
 
 The GUI's **Add app** button uses the same validation and registration handler. It appends
-a Git-only entry to `apps.json` and selects it in all open sessions. **Create private repo**
-creates the empty GitHub repository from the `owner/name` field inside InstaladorBUDA; it
-does not upload files. When a build workflow is ready, edit that entry in `apps.json` with
-the release fields below.
+the complete entry to `apps.json` (see 3a), selects it in all open sessions and logs the
+wiring check; the `add-app` reply carries the same check (`wiring`, `fullyWired`) and the
+entry. **Create private repo** creates the empty GitHub repository from the `owner/name`
+field inside InstaladorBUDA; it does not upload files.
+
+`status` reports, for each session, the visibility label read from GitHub (`visibility`),
+the repository it reads (`visibilityRepo`) and whether **Make public** / **Make private** are
+enabled (`visibilityToggle`). `list` gives each target's own repository (`githubRepo`),
+release repository and branch, and `manageVisibility`.
 
 The same sequence is available in the GUI's **GitHub repository bootstrap** group. Enter
 the project folder, GitHub `owner/name`, an initial commit message, and optionally a
@@ -390,7 +442,7 @@ out: flip it public to deploy for free, then flip it back private once the build
 | **Make private** | Same, with `--visibility private`. No confirmation prompt — reverting to private is the safe direction. |
 
 This always targets **the app's own repo** (resolved the same way as *Publish from run*,
-from `repoRoot`'s git remote) — that's the repo whose Actions minutes are being spent,
+from `repoRoot`'s git remote, else the entry's `githubRepo`) — that's the repo whose Actions minutes are being spent,
 which is not necessarily `TashiRabten/GlossarioBUDA` (the release repo installers get
 published to). `--accept-visibility-change-consequences` is passed automatically so the
 command doesn't hang waiting on an interactive confirmation `gh` would otherwise print.
@@ -413,11 +465,12 @@ the folder is not a git repo. Output goes to the session's log like any other jo
 |---|---|
 | **Status** | `git status` — read-only, so it runs without the confirmation dialog. |
 | **Add** + field | `git add -- <paths>`: paths separated by spaces, a path with spaces in `"double quotes"` (`"Screenshot 2026-09-02 171631.png" README.md`), `.` for every change. Shows `git status --short --branch` after. |
+| **Unstage** | `git restore --staged -- <paths>` of the paths in the Add field: they leave the next commit (their index entry goes back to the last commit's) and the files on disk stay as they are; `.` unstages everything. For a path that `.` staged by mistake, such as a backup or a shortcut. Shows `git status --short --branch` after. |
 | **Commit** + Message | `git commit -F <file>`: the message box can hold several lines, accents and quotes — it reaches git exactly as typed (it travels base64-encoded through a temp file, like the release note). Gitleaks first scans the staged changes (`gitleaks git --pre-commit --staged`, findings redacted); a finding, a scanner error, or no Gitleaks found stops before `git commit`. Shows the new commit and the status after. |
 | **Push** | `git push` of the current branch to its upstream — never `--force`. Gitleaks first scans the commits the upstream does not have yet (the whole history on a first push) and stops the push on a finding. |
 
 `core.quotepath=false` is passed, so file names with accents or Tibetan print as written. Add,
-Commit and Push ask for confirmation (skipped under *Dry run*, which only prints the commands).
+Unstage, Commit and Push ask for confirmation (skipped under *Dry run*, which only prints the commands).
 InstaladorBUDA's own repo is in `apps.json` too (no build workflow, so its release steps are
 off) — pick it as the target to commit and push changes to this cockpit.
 
@@ -430,23 +483,160 @@ the new exe. If the build fails, that console stays open with the error and the 
 `.ps1`) is started instead. The line beside the button shows when the running exe was built, so
 you can see the update took effect. The button is off when `build-exe.ps1` is not next to the exe.
 
+The exe is a console program so that `-Cli` can print its JSON reply. When it opens the window, it
+starts itself once more without a console window and the first copy exits, so no empty terminal
+window stays behind. This matters when Windows Terminal hosts consoles, the Windows 11 default:
+such a window cannot be hidden, and closing it used to close the cockpit. A terminal may flash
+briefly at launch.
+
+## 2f. Suggested changes (a PR without access to GitHub)
+
+TradutorBUDA can change its own code on a user's machine. A user who wants that change in the app
+for everyone has no access to the private repository and none of the project's secrets: the app
+writes the change as a signed bundle (`.budafix`, in `~/.tradutorbuda/sugestoes`), this section
+sends it to a Supabase inbox, and only the maintainer's cockpit turns it into a branch and a pull
+request. The inbox is TradutorBUDA's `dev/security/supabase-fix-inbox.sql` (v2): contributors are
+invited Supabase accounts registered as developers; the maintainer has no account and uses the
+admin passphrase. Every session has the group **Sugestões de mudança (PR sem acesso ao GitHub)**.
+
+**Configurar...** stores, per Windows user (`%LOCALAPPDATA%\InstaladorBUDA\fix-inbox.json`): the
+Supabase project URL and its *publishable* key (a secret `sb_secret_…` key, or a JWT whose role
+is not `anon`, is refused), the bundles folder, the TradutorBUDA install whose BundleTool is used
+(`<install>\runtime\bin\java.exe -cp <install>\app\TradutorBUDA.jar
+com.example.glossariobuda.selfcode.BundleTool`), the developer registry and the root public key,
+where downloaded bundles and worktrees go, and the highest registry version seen (an older
+registry is then refused as a rollback). No password or passphrase is ever stored there.
+
+**Contributor — Sugerir mudança (PR)...** Pick the `.budafix`; the window shows what its manifest
+says (title, app and version, the files and whether each is changed, new or deleted, the
+capabilities the change adds, the signing key). Sign in with the e-mail and password of the
+invited account: the password is typed in a masked field, goes into one request, and is
+neither stored, logged nor accepted from the CLI; only the session token is kept, in memory.
+**Enviar sugestão** inserts the row with the bundle in it (`bundle_b64`, at most 4 MiB); the
+database checks the SHA-256 and size against the bytes, the account's registered key and app, the
+open switch and the hourly cap. A bundle already in the inbox is not sent twice. The list shows
+this account's suggestions and their status (received, PR opened, merged, declined with the
+maintainer's note); before signing in it shows the last status this machine saw
+(`%LOCALAPPDATA%\InstaladorBUDA\fix-sent.json`).
+
+**Maintainer — Sugestões recebidas...** Type the admin passphrase and click **Usar**: it is checked
+by listing the inbox and then held as a SecureString in that window only, until **Esquecer** or
+the window closes. **Baixar e verificar** fetches the bundle (`fix_inbox_bundle`), checks it
+against the row's SHA-256 and size, and runs `BundleTool bundle-verify` against a detached
+worktree at the release tag (`tradutor-buda-v<version>`, made once per version under the
+worktree folder, checked out with `core.autocrlf=true` like the Windows build that ships the
+sources). When the clone has no such tag (a release built through **Trigger workflow** runs on
+`main` and is tagged only in the release repository: on 2026-11-02 `tradutor-buda-v1.8.11`,
+`scanbuda-v1.0.16` and `suitebuda-v1.0.5` were missing from the app repositories), the review
+first fetches the tag from GitHub and otherwise tags, in this clone only and never pushed, the
+commit the release was built from: the one run of the app's workflow that was running when each
+`.exe` of the release was uploaded, all from the same commit (`Find-FixReleaseBuildCommit`).
+The bundle's base hashes are then checked against that commit's files, as for any release.
+The report shows the verdict and every problem, the capabilities the change adds and
+those beyond the developer's ceiling **first**, then who, which branch and which files, then the
+diff against the release. Nothing is branched or built until **Abrir PR...**, which asks first
+(and asks again when the change goes beyond the ceiling) and runs as a job of the session:
+a worktree on the branch the verifier returned (`contrib/<id>/<slug>`, from the root-signed
+registry, never from the bundle), `bundle-apply` (which verifies again), a commit authored by
+you that credits the contributor by name, Gitleaks on the staged change and on the commits the
+branch adds, `git push`, `gh pr create --base main`, and then `pr-opened` and the PR address
+written back to the row (`fix_inbox_set_status`). It stops before anything if the bundle changed
+since it was verified or the branch already exists here or on GitHub. **Mesclar PR...**
+(`gh pr merge --merge`, after the build, the targeted tests and the Codacy mirror in the PR's
+worktree) and **Recusar...** (a note for the developer; an open PR is closed) are separate
+confirmed actions. **Verificar arquivo local...** verifies a bundle on disk the same way.
+**Registrar desenvolvedores...** registers in the inbox each developer of the registry BundleTool
+has just verified (each must have been invited first, with the same e-mail); **Fechar a caixa** /
+**Abrir a caixa** is the kill switch.
+
+Closing the window does not cost a suggestion its PR. What a job found out goes to the row with
+the passphrase, and the passphrase leaves with the window, so the status first waits in
+`%LOCALAPPDATA%\InstaladorBUDA\fix-pending.json` (no secret in it; `fix-status` lists it as
+`pendingStatus`) and reaches the row at the next **Usar** or **Atualizar lista**; a window opened
+while the job ran takes it at once. Those two also ask GitHub about the rows still without a PR
+(`gh pr list`, once per repository, only when there is such a row): a PR is the row's only when
+its branch is `contrib/<id>/<slug>` in the repository itself, not a fork, and its body carries the
+package hash. An open PR gives `pr-opened`, a merged one `merged`; a closed one is left to the
+maintainer, because declining takes a note. Not yet verified in the app.
+
+**Verificar registro** runs `BundleTool registry-verify` and lists the developers in the log.
+**Assinar registro...** opens a console that runs `BundleTool registry-sign`: the root password is
+typed in that console, never in the cockpit.
+
+With **Dry run** checked nothing is sent to Supabase or GitHub: the requests (with the password and
+the passphrase left out) and the PR commands are written to the session log.
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"fix-suggest","bundle":"C:\\Users\\me\\.tradutorbuda\\sugestoes\\corrige.budafix"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"fix-suggest-send","confirm":true}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"fix-inbox"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"fix-inbox-verify","id":12}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"fix-inbox-open-pr","confirm":true,"waitMs":900000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"fix-status"}'
+```
+
+Every button has a CLI action that clicks it (`fix-settings`, `fix-suggest`, `fix-suggest-send`,
+`fix-suggest-refresh`, `fix-sign-out`, `fix-inbox`, `fix-inbox-refresh`, `fix-inbox-verify` with
+`id` or `bundle`, `fix-inbox-open-pr` with `overrideCeiling`, `fix-inbox-decline` with `id` and
+`note`, `fix-inbox-merge` with `id`, `fix-inbox-register`, `fix-inbox-open` / `fix-inbox-close` with
+`maxPerHour`, `fix-inbox-forget`, `fix-registry-verify`, `fix-registry-sign` with `in` and
+`rootIdentity`); `fix-status` reads both windows. Signing in and **Usar** have no CLI route on
+purpose: the password and the passphrase are typed only in the window, and a request carrying
+`password`, `passphrase`, `token` or a similar field is refused. Actions that send, build, push,
+merge, decline, register or switch the inbox need `"confirm":true` (or `dryRun:true`).
+SuiteBUDA suggestions use its installed runtime and the trusted launcher dispatcher
+`org.budasuite.SuiteBUDA --bundle-tool`; the reviewer and PR both use `app/src/main/java`.
+Configure the SuiteBUDA install in **Configurar...** or `fix-settings` with `suiteInstall`
+(`scanInstall` selects ScanBUDA independently). Signature, registry, capability and base-hash
+checks are mandatory for each app. A developer must be authorized for SuiteBUDA in the
+root-signed registry and in the inbox before sending.
+
+For the initial SuiteBUDA base version `0.0.0`, there is no published release tag. Set its
+`suggestionBaseCommit` in `apps.json` to the exact 40-character initial commit; a branch name
+is refused. Versions after that use `suitebuda-v<version>` exclusively. The base hashes still
+have to match that commit. After the PR is merged, select SuiteBUDA and use **Test build**
+(`dispatch`, `publish:false`) to run `build-suitebuda-installer.yml` with `version` and
+`publish` inputs. Publishing to GlossarioBUDA requires the release signing configuration.
+The integration passes `tests\FixSuite.Tests.ps1`; not yet verified in the app.
+
+`tests\FixInbox.Tests.ps1` runs both flows with no network: a Supabase stand-in with the schema's
+rules, a bare repository as GitHub, a recording `gh`, and TradutorBUDA's own BundleTool with a
+temporary root key and registry. Not yet verified in the app.
+
 ## 3. Adding a new app
 
-### 3a. Add a Git-only app in the cockpit or configure a release target
+### 3a. Add an app in the cockpit (GUI or CLI)
 
-For a new project that only needs Git controls and first-push bootstrap, fill **App name**,
-**Project folder**, and **GitHub repo** in the bootstrap group and click **Add app**. The new
-target is stored in `apps.json` and selected in each open session. You can then click
-**Preflight**, inspect the plan, prepare and review the staged files, and commit and push
-through the existing bootstrap flow. The `add-app` CLI command accepts the same three values.
+Fill **App name**, **Project folder**, and **GitHub repo** in the bootstrap group and click
+**Add app** (the `add-app` CLI command takes the same three values and clicks the same
+button). One click writes the complete entry: `githubRepo` (the app's own repository),
+`manageVisibility: true`, and — when the project has a release workflow in
+`.github/workflows` (`build-app-installers.yml`, else `build-installers.yml`, else the only
+workflow with a push-tag trigger and dispatch inputs) — `workflow`, `tagPrefix`,
+`versionFromGitTag`, `versionFromReleaseTag`, `releaseRepo` / `releaseBranch` (from the
+workflow's `RELEASE_REPO` and `RELEASE_BRANCH` / `RELEASE_TARGET`, else its own repository)
+and `dispatchInputs` (`version`, `publish`, `release_notes`, `bundles`). A project without a
+release workflow becomes a Git-only target. `apps.json` refuses a new entry that lacks one of
+these fields, so neither path can register a half-wired app.
 
-To configure an app that already has a build/release workflow, add or edit a full entry in
-`apps.json`:
+The new target is selected in each open session and the log lists a check per control family
+(registry, project folder, Git, GitHub repository, visibility, Actions page, Actions secrets
+with the secrets the workflow reads, release steps). A project not yet on GitHub continues
+with **Create private repo**, **Preflight**, **Prepare and stage**, and **Commit and push**.
+The full checklist, including what the app's own repository must provide, is
+[`MDs/adicionar-app.md`](MDs/adicionar-app.md).
+
+Afterwards, edit the entry by hand only for what a workflow file cannot say: set
+`manageVisibility` to `false` for a repository the cockpit must never make public, or add
+`uploadScript` / `uploadModels` / `bundles` / `outputKind`. A full entry looks like this:
 
 ```jsonc
 {
   "name": "MyApp",
   "repoRoot": "C:\\path\\to\\myapp-repo",      // where the app's git repo lives on disk
+  "githubRepo": "owner/MyApp",                  // the app's own repository (visibility, Actions, secrets)
+  "releaseRepo": "TashiRabten/GlossarioBUDA",   // where its releases are published
+  "manageVisibility": true,                     // Make public / Make private enabled
   "tagPrefix": "myapp-v",                       // tag = tagPrefix + version
   "workflow": "build-myapp.yml",                // workflow file name in that repo
   "releaseBranch": "myapp",                     // target_commitish for the release (or "")
@@ -493,10 +683,11 @@ To configure an app that already has a build/release workflow, add or edit a ful
 |---|---|---|
 | `name` | ✅ | Shown in the dropdown. |
 | `repoRoot` | ✅ | Absolute path to the app's git repo on your machine. May be any repo — InstaladorBUDA can drive many. |
+| `githubRepo` | ✅ for new entries | The app's own `owner/name`. The origin remote wins when the folder is its own repository; this field covers an app registered before its first push. Visibility, *Load runs*, *Open Actions page* and *Actions secrets* use it. |
 | `tagPrefix` | For release targets | The release tag is `tagPrefix + version`. A Git-only target leaves this empty. |
 | `workflow` | For release targets | Workflow file name (for *Trigger workflow*). A Git-only target leaves this empty. |
 | `outputKind` | — | Set to `container-image` for an image workflow with no GitHub Release. InstaladorBUDA hides release-only controls and follows image publication instead. Omit for standard GitHub Release targets. |
-| `manageVisibility` | — | Set to `false` to disable the public/private controls for a repo target whose visibility this app should not change. |
+| `manageVisibility` | ✅ for new entries | `true` enables **Make public** / **Make private** (Add app writes `true`; an older entry without it counts as `true`). Set to `false` for a repo whose visibility this app should not change. |
 | `releaseBranch` | — | `target_commitish` if the updater filters by branch; otherwise `""`. Also used as `--target` when *Publish from run* creates the release. |
 | `releaseRepo` | — | Repo that hosts this app's **releases**. Omit for BUDA apps (defaults to `releaseRepoDefault` = `TashiRabten/GlossarioBUDA`); set it to the app's own `owner/repo` for standalone apps that publish to themselves. Used by *Publish from run* / *Un-draft*. |
 | `versionFile` + `versionRegex` | one of these¹ | Read current version from a file (capture group 1). |
@@ -611,15 +802,69 @@ update each `repoRoot` if your checkout paths differ.
 | `modules/AppRegistry.psm1` | App registry class and safe `apps.json` registration. |
 | `modules/GitBootstrap.ps1` | Empty-remote preflight, prepare, and publish logic. |
 | `modules/ReleaseOperations.ps1` | Release, Git, workflow, and follow-up commands. |
+| `modules/AppWiring.ps1` | Add app's complete entry (release fields read from the project's workflow), the per-control wiring check, the app's Actions page, and the CLI `list` reply. |
 | `modules/AppSelection.ps1` | Console menu and app/model/bundle selection. |
 | `modules/GuiLayout.ps1` | Shared GUI metrics and layout helpers. |
 | `modules/FilePicker.ps1` | Native Windows file/folder dialogs with per-purpose folder memory. |
 | `modules/GitIgnore.ps1` | `.gitignore` editor dialog with safe, explicit saves. |
 | `modules/AgentProfiles.ps1` | Agent profiles, command lookup, and the Configure agents and setup-help windows. |
+| `modules/AgentOutput.ps1` | Reads an agent's output while it runs and turns it into steps and the reply. |
 | `modules/CodeCli.ps1` | Encrypted local conversations and the in-app prompt window. |
+| `modules/AgentTerminal.ps1` | Open in terminal: runs an agent's CLI interactively in its own terminal window. |
+| `modules/FixInbox.ps1` | Suggested changes: settings, the publishable-key check, reading a bundle's manifest. |
+| `modules/FixInboxClient.ps1` | The Supabase inbox: contributor sign-in and submissions, the maintainer's `fix_inbox_*` functions, the local records of what was sent and of the statuses still to be written. |
+| `modules/FixReview.ps1` | BundleTool with the installed runtime, the release worktree, the diff, the verification report, the registry. |
+| `modules/FixPullRequest.ps1` | The Abrir PR / Mesclar PR / close jobs, the status written back to the row, and the lookup of a PR the row lost. |
+| `modules/FixInboxGui.ps1` | The session group, Configurar..., sign-in and passphrase rows, the step runner. |
+| `modules/FixSuggestWindow.ps1` | Sugerir mudança (PR): the contributor's window. |
+| `modules/FixInboxWindow.ps1` | Sugestões recebidas: the maintainer's window. |
+| `modules/FixInboxCli.ps1` | The `fix-*` CLI actions and `fix-status`. |
 | `modules/CockpitHelp.ps1` | The CLI `help` reply: commands, parameters, examples and safety notes. |
 | `modules/Cockpit.ps1` | CLI requests and named-pipe cockpit commands. |
 | `modules/Gui.ps1` | Main window, session dropdown, and independent WinForms job panels. |
-| `apps.json` | The app registry. Use **Add app** for Git-only targets or edit for release fields. |
+| `apps.json` | The app registry. **Add app** writes complete entries; edit by hand only for fields a workflow cannot give. |
 | `build-exe.ps1` | Compiles `InstaladorBUDA.exe` via ps2exe. |
+| `tests/FixInbox.Tests.ps1`, `tests/FixInbox.Flow.ps1`, `tests/FixInboxFakes.ps1`, `tests/fixtures/MakeBundle.java` | Suggested changes end to end with no network (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixInbox.Tests.ps1`); needs TradutorBUDA's compiled classes beside this folder and its installed runtime, else the end-to-end part is skipped. |
+| `tests/FixPrStatus.Tests.ps1` | A window closed during a PR, merge or decline job: the status waits and reaches the row; a row whose status was lost finds its PR on GitHub (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixPrStatus.Tests.ps1`). |
+| `tests/AddApp.Tests.ps1` | Add app tests: workflow reading, the complete entry, the wiring check, and the GUI and CLI add paths in a headless STA window (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\AddApp.Tests.ps1`). |
+| `tests/GitUnstage.Tests.ps1` | Unstage from the button and from `git-unstage` on a temporary repository: the named paths leave the index, their files stay as they are, and the other git actions still reach their buttons (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\GitUnstage.Tests.ps1`). |
+| `MDs/adicionar-app.md` | Checklist of what a fully wired app needs (Portuguese). |
 | `README.md` | This file. |
+
+### Retry, pull requests and conflict resolution
+
+**Retry last failed job** repeats the failed job in its original target session. For a failed
+release-tag build it finds that tag's existing workflow run instead of pushing the tag again.
+Use **Workflow runs: retry or publish → Load runs → Retry selected run** to repeat an entire
+GitHub run, or **Retry failed jobs** to repeat only its failed jobs. Retry retains the original
+commit and workflow inputs, waits for the new attempt, and follows its result. Use a fresh
+version or Trigger workflow when changed source must be built. An unchanged Retag explains
+this choice; a failed tag push can be resumed when the local tag still matches HEAD.
+
+The **Pull requests** section lists open PRs, creates a PR from a pushed head branch to the
+chosen base, and merges a selected PR number. Merge pins the inspected head commit and keeps
+GitHub's normal checks. Suggested bundles retain their existing signature/review/PR route.
+
+**Git → Pull** merges the upstream without rebasing. Commit or stash local changes first.
+A divergent merge is left uncommitted for review. **Resolve conflicts…** opens a modeless
+editor with local, incoming, common-ancestor and editable result views. Save resolution
+checks that the file has not changed, rejects leftover markers, and stages that file.
+Complete merge requires no unresolved files and runs Gitleaks before committing.
+The editor supports UTF-8 text up to 1 MB; binary/deleted/linked conflicts require another editor.
+
+GUI and CLI use the same handlers:
+
+```json
+{"command":"action","action":"rerun-failed","session":1,"runId":"123456","confirm":true}
+{"command":"action","action":"pr-create","session":1,"prBase":"main","prHead":"feature/change","prTitle":"Describe change","prBody":"Details","confirm":true}
+{"command":"action","action":"pr-merge","session":1,"prNumber":"7","confirm":true}
+{"command":"action","action":"git-pull","session":1,"confirm":true}
+{"command":"action","action":"merge-tool","session":1}
+{"command":"action","action":"merge-save","session":1,"mergeFile":"path.txt","mergeResult":"Resolved text\n","confirm":true}
+{"command":"action","action":"merge-continue","session":1,"confirm":true}
+```
+
+Other routes: `retry-last-job`, `rerun`, `pr-list`, `merge-refresh`, `merge-file`,
+`merge-use-local`, and `merge-use-incoming`. The conflict window must belong to the selected target.
+New modules: `RecoveryOperations.ps1` and `MergeTool.ps1`, bundled into the standalone EXE.
+Not yet verified by the user in the app.

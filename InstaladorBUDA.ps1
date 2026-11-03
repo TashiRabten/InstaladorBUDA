@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     InstaladorBUDA — a small standalone deployment cockpit for the BUDA apps.
     Pick a target app + version and Upload models / push a release tag / trigger a
@@ -54,24 +54,50 @@ $cfgFile = if ($ConfigPath) { $ConfigPath } else { Join-Path $AppDir 'apps.json'
 if ($script:SelfPath) {
     . (Join-Path $AppDir 'modules\GitBootstrap.ps1')
     . (Join-Path $AppDir 'modules\ReleaseOperations.ps1')
+    . (Join-Path $AppDir 'modules\RecoveryOperations.ps1')
+    . (Join-Path $AppDir 'modules\MergeTool.ps1')
+    . (Join-Path $AppDir 'modules\AppWiring.ps1')
     . (Join-Path $AppDir 'modules\AppSelection.ps1')
     . (Join-Path $AppDir 'modules\GuiLayout.ps1')
     . (Join-Path $AppDir 'modules\FilePicker.ps1')
     . (Join-Path $AppDir 'modules\GitIgnore.ps1')
     . (Join-Path $AppDir 'modules\AgentProfiles.ps1')
+    . (Join-Path $AppDir 'modules\AgentOutput.ps1')
     . (Join-Path $AppDir 'modules\CodeCli.ps1')
+    . (Join-Path $AppDir 'modules\AgentTerminal.ps1')
+    . (Join-Path $AppDir 'modules\FixInbox.ps1')
+    . (Join-Path $AppDir 'modules\FixInboxClient.ps1')
+    . (Join-Path $AppDir 'modules\FixReview.ps1')
+    . (Join-Path $AppDir 'modules\FixPullRequest.ps1')
+    . (Join-Path $AppDir 'modules\FixInboxGui.ps1')
+    . (Join-Path $AppDir 'modules\FixSuggestWindow.ps1')
+    . (Join-Path $AppDir 'modules\FixInboxWindow.ps1')
+    . (Join-Path $AppDir 'modules\FixInboxCli.ps1')
     . (Join-Path $AppDir 'modules\CockpitHelp.ps1')
     . (Join-Path $AppDir 'modules\Cockpit.ps1')
     . (Join-Path $AppDir 'modules\Gui.ps1')
 } else {
     #__GIT_BOOTSTRAP_MODULE__
     #__RELEASE_OPERATIONS_MODULE__
+    #__RECOVERY_OPERATIONS_MODULE__
+    #__MERGE_TOOL_MODULE__
+    #__APP_WIRING_MODULE__
     #__APP_SELECTION_MODULE__
     #__GUI_LAYOUT_MODULE__
     #__FILE_PICKER_MODULE__
     #__GIT_IGNORE_MODULE__
     #__AGENT_PROFILES_MODULE__
+    #__AGENT_OUTPUT_MODULE__
     #__CODE_CLI_MODULE__
+    #__AGENT_TERMINAL_MODULE__
+    #__FIX_INBOX_MODULE__
+    #__FIX_INBOX_CLIENT_MODULE__
+    #__FIX_REVIEW_MODULE__
+    #__FIX_PULL_REQUEST_MODULE__
+    #__FIX_INBOX_GUI_MODULE__
+    #__FIX_SUGGEST_WINDOW_MODULE__
+    #__FIX_INBOX_WINDOW_MODULE__
+    #__FIX_INBOX_CLI_MODULE__
     #__COCKPIT_HELP_MODULE__
     #__COCKPIT_MODULE__
     #__GUI_MODULE__
@@ -129,13 +155,35 @@ function Initialize-CliConsole {
     } catch { }
 }
 
-function Hide-GeneratedConsole {
-    if ($script:SelfPath) { return }
+# The exe is a console build so -Cli can write its JSON reply. Started from Explorer it gets a console
+# window, and when Windows Terminal hosts consoles (the Windows 11 default) that window cannot be hidden:
+# it stayed on screen, and closing it ended the cockpit. Detaching does not help: PowerShell allocates a new
+# console for the first git/gh call, and .NET then fails to remove its Ctrl+C hook at exit (IOException in
+# Console+ControlCHooker.Unhook, a crash on close). So the GUI starts itself once more with CreateNoWindow,
+# which gives the new copy a console without a window, and this copy exits.
+function Invoke-WindowlessRelaunch {
+    if ($script:SelfPath) { return $false }
+    if ($env:INSTALADORBUDA_WINDOWLESS) {
+        # This is the relaunched copy. Clear the marker so a cockpit it starts later (Update) relaunches too.
+        Remove-Item Env:INSTALADORBUDA_WINDOWLESS -ErrorAction SilentlyContinue
+        return $false
+    }
     try {
         Initialize-ConsoleNative
-        $window = [InstaladorBudaConsoleNative]::GetConsoleWindow()
-        if ($window -ne [IntPtr]::Zero) { [void][InstaladorBudaConsoleNative]::ShowWindow($window, 0) }
-    } catch { }
+        if ([InstaladorBudaConsoleNative]::GetConsoleWindow() -eq [IntPtr]::Zero) { return $false }
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        if ($ConfigPath) { $startInfo.Arguments = '-ConfigPath "' + $ConfigPath + '"' }
+        $startInfo.WorkingDirectory = (Get-Location).Path
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.EnvironmentVariables['INSTALADORBUDA_WINDOWLESS'] = '1'
+        [void][System.Diagnostics.Process]::Start($startInfo)
+        return $true
+    } catch {
+        Write-Debug "Windowless restart failed; the cockpit stays in this console: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Send-CockpitPipeRequest {
@@ -227,7 +275,7 @@ $HasGh  = Test-Tool gh
 # ── Entry point ──────────────────────────────────────────────────────────────
 if ($Cli) { Initialize-CliConsole; Invoke-CockpitCli -Json $Cli; return }
 if ($Console) { Show-ConsoleMenu; return }
-Hide-GeneratedConsole
+if (Invoke-WindowlessRelaunch) { return }
 try {
     Show-Gui
 } catch {

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compile InstaladorBUDA.ps1 into a standalone InstaladorBUDA.exe using ps2exe.
 
@@ -29,12 +29,25 @@ $moduleFiles = [ordered]@{
     '#__APP_REGISTRY_CLASS__' = 'modules\AppRegistry.psm1'
     '#__GIT_BOOTSTRAP_MODULE__' = 'modules\GitBootstrap.ps1'
     '#__RELEASE_OPERATIONS_MODULE__' = 'modules\ReleaseOperations.ps1'
+    '#__RECOVERY_OPERATIONS_MODULE__' = 'modules\RecoveryOperations.ps1'
+    '#__MERGE_TOOL_MODULE__' = 'modules\MergeTool.ps1'
+    '#__APP_WIRING_MODULE__' = 'modules\AppWiring.ps1'
     '#__APP_SELECTION_MODULE__' = 'modules\AppSelection.ps1'
     '#__GUI_LAYOUT_MODULE__' = 'modules\GuiLayout.ps1'
     '#__FILE_PICKER_MODULE__' = 'modules\FilePicker.ps1'
     '#__GIT_IGNORE_MODULE__' = 'modules\GitIgnore.ps1'
     '#__AGENT_PROFILES_MODULE__' = 'modules\AgentProfiles.ps1'
+    '#__AGENT_OUTPUT_MODULE__' = 'modules\AgentOutput.ps1'
     '#__CODE_CLI_MODULE__' = 'modules\CodeCli.ps1'
+    '#__AGENT_TERMINAL_MODULE__' = 'modules\AgentTerminal.ps1'
+    '#__FIX_INBOX_MODULE__' = 'modules\FixInbox.ps1'
+    '#__FIX_INBOX_CLIENT_MODULE__' = 'modules\FixInboxClient.ps1'
+    '#__FIX_REVIEW_MODULE__' = 'modules\FixReview.ps1'
+    '#__FIX_PULL_REQUEST_MODULE__' = 'modules\FixPullRequest.ps1'
+    '#__FIX_INBOX_GUI_MODULE__' = 'modules\FixInboxGui.ps1'
+    '#__FIX_SUGGEST_WINDOW_MODULE__' = 'modules\FixSuggestWindow.ps1'
+    '#__FIX_INBOX_WINDOW_MODULE__' = 'modules\FixInboxWindow.ps1'
+    '#__FIX_INBOX_CLI_MODULE__' = 'modules\FixInboxCli.ps1'
     '#__COCKPIT_HELP_MODULE__' = 'modules\CockpitHelp.ps1'
     '#__COCKPIT_MODULE__' = 'modules\Cockpit.ps1'
     '#__GUI_MODULE__' = 'modules\Gui.ps1'

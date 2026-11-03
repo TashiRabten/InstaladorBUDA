@@ -20,7 +20,7 @@ function Add-CodeCliSavedSessions {
         $messages = New-Object System.Collections.ArrayList
         foreach ($message in @($entry.messages)) {
             if ($null -eq $message -or [string]::IsNullOrWhiteSpace([string]$message.role)) { continue }
-            [void]$messages.Add([pscustomobject]@{ Role = [string]$message.role; Content = [string]$message.content; CreatedUtc = [string]$message.createdUtc })
+            [void]$messages.Add([pscustomobject]@{ Role = [string]$message.role; Content = [string]$message.content; Activity = [string]$message.activity; CreatedUtc = [string]$message.createdUtc })
         }
         $session = [pscustomobject]@{
             Id = $id; ProjectRoot = [string]$entry.projectRoot; AppName = [string]$entry.appName
@@ -105,7 +105,8 @@ function Format-CodeCliTranscript {
     $builder = New-Object System.Text.StringBuilder
     foreach ($message in @($Session.Messages)) {
         $speaker = if ($message.Role -eq 'user') { 'You' } else { 'Agent' }
-        [void]$builder.AppendLine("$speaker`r`n$($message.Content)`r`n")
+        $steps = if ($message.Activity) { "$($message.Activity)`r`n`r`n" } else { '' }
+        [void]$builder.AppendLine("$speaker`r`n$steps$($message.Content)`r`n")
     }
     return $builder.ToString()
 }
@@ -141,7 +142,12 @@ function Show-CodeCliDialog {
     param(
         [Parameter(Mandatory=$true)][string]$AppName,
         [Parameter(Mandatory=$true)][string]$RepositoryRoot,
-        [System.Windows.Forms.IWin32Window]$Owner
+        [System.Windows.Forms.IWin32Window]$Owner,
+        # The cockpit tab's state: the open window is published there for the CLI's code-cli-terminal action.
+        [hashtable]$CockpitState,
+        # Set by code-cli-terminal when it opened this window: click Open in terminal for $TerminalAgent once shown.
+        [switch]$OpenTerminal,
+        [string]$TerminalAgent
     )
 
     if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) { throw "Project folder does not exist: $RepositoryRoot" }
@@ -150,7 +156,7 @@ function Show-CodeCliDialog {
     foreach ($session in @(Get-CodeCliSessions)) { [void]$sessions.Add($session) }
     $dialog = New-Object System.Windows.Forms.Form
     $dialog.Text = 'Code CLI conversation'
-    $dialog.StartPosition = 'CenterParent'; $dialog.MinimizeBox = $false; $dialog.ShowInTaskbar = $false
+    $dialog.StartPosition = 'CenterParent'; $dialog.ShowInTaskbar = $false
     $layout = $UI.AgentChat
     $dialog.ClientSize = [System.Drawing.Size]::new((Px $layout.Width), (Px $layout.Height))
     $dialog.MinimumSize = [System.Drawing.Size]::new((Px $layout.MinWidth), (Px $layout.MinHeight))
@@ -165,6 +171,8 @@ function Show-CodeCliDialog {
     Set-Field $cmbAgent $dialog.Font $layout.AgentX $layout.AgentLabelY $layout.AgentWidth; $cmbAgent.Anchor = 'Top,Left,Right'
     $btnConfigure = New-Object System.Windows.Forms.Button
     $btnConfigure.Text = 'Configure agents...'; Set-Box $btnConfigure $layout.ConfigureX $layout.ConfigureY $layout.ConfigureWidth $layout.ConfigureHeight; $btnConfigure.Anchor = 'Top,Right'
+    $btnTerminal = New-Object System.Windows.Forms.Button
+    $btnTerminal.Text = 'Open in terminal'; Set-Box $btnTerminal $layout.TerminalX $layout.ConfigureY $layout.TerminalWidth $layout.ConfigureHeight; $btnTerminal.Anchor = 'Top,Right'
     $lblConversation = New-Object System.Windows.Forms.Label
     $lblConversation.Text = 'Conversation:'; $lblConversation.TextAlign = 'MiddleLeft'; Set-Box $lblConversation $layout.ConversationLabelX $layout.ConversationLabelY $layout.ConversationLabelWidth $UI.RowH
     $cmbConversation = New-Object System.Windows.Forms.ComboBox
@@ -175,6 +183,7 @@ function Show-CodeCliDialog {
     $transcript = New-Object System.Windows.Forms.TextBox
     $transcript.Multiline = $true; $transcript.ReadOnly = $true; $transcript.ScrollBars = 'Vertical'; $transcript.WordWrap = $true
     $transcript.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $transcript.MaxLength = 0   # no 32K cap: steps are appended while the agent works
     Set-Box $transcript $layout.TranscriptX $layout.TranscriptY $layout.TranscriptWidth $layout.TranscriptHeight; $transcript.Anchor = 'Top,Bottom,Left,Right'
     $lblPrompt = New-Object System.Windows.Forms.Label
     $lblPrompt.Text = 'Prompt:'; $lblPrompt.TextAlign = 'MiddleLeft'; Set-Box $lblPrompt $layout.PromptLabelX $layout.PromptLabelY $layout.PromptLabelWidth $layout.PromptLabelHeight; $lblPrompt.Anchor = 'Bottom,Left,Right'
@@ -187,15 +196,25 @@ function Show-CodeCliDialog {
     $btnStop = New-Object System.Windows.Forms.Button
     $btnStop.Text = 'Stop'; $btnStop.Enabled = $false; Set-Box $btnStop $layout.StopX $layout.ActionY $layout.StopWidth $layout.ActionHeight; $btnStop.Anchor = 'Bottom,Left'
     $btnClose = New-Object System.Windows.Forms.Button
-    $btnClose.Text = 'Close'; $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $btnClose.Text = 'Close'
     Set-Box $btnClose $layout.CloseX $layout.ActionY $layout.CloseWidth $layout.ActionHeight; $btnClose.Anchor = 'Bottom,Right'
-    $dialog.Controls.AddRange(@($lblProject, $lblAgent, $cmbAgent, $btnConfigure, $lblConversation, $cmbConversation, $btnNewConversation, $transcript, $lblPrompt, $txtPrompt, $btnSend, $btnStop, $btnClose))
+    $barProgress = New-Object System.Windows.Forms.ProgressBar
+    $barProgress.Style = 'Marquee'; $barProgress.MarqueeAnimationSpeed = 30; $barProgress.Visible = $false
+    Set-Box $barProgress $layout.ProgressX ($layout.ActionY + ($layout.ActionHeight - $layout.ProgressHeight) / 2) $layout.ProgressWidth $layout.ProgressHeight; $barProgress.Anchor = 'Bottom,Left'
+    $lblStatus = New-Object System.Windows.Forms.Label
+    $lblStatus.TextAlign = 'MiddleLeft'; $lblStatus.AutoEllipsis = $true; $lblStatus.ForeColor = [System.Drawing.Color]::DimGray
+    Set-Box $lblStatus $layout.StatusX $layout.ActionY $layout.StatusWidth $layout.ActionHeight; $lblStatus.Anchor = 'Bottom,Left,Right'
+    $dialog.Controls.AddRange(@($lblProject, $lblAgent, $cmbAgent, $btnTerminal, $btnConfigure, $lblConversation, $cmbConversation, $btnNewConversation, $transcript, $lblPrompt, $txtPrompt, $btnSend, $btnStop, $barProgress, $lblStatus, $btnClose))
     foreach ($agentProfile in $profiles) { [void]$cmbAgent.Items.Add($agentProfile) }
+    $tips = New-Object System.Windows.Forms.ToolTip
+    $tips.SetToolTip($btnTerminal, 'Runs the selected agent''s CLI in its own terminal window in this project folder, to sign in (/login) or use its other / commands. The chat cannot run them.')
 
     $chatState = [hashtable]::Synchronized(@{
         Profiles = $profiles; Session = $null; RunSession = $null; Loading = $false
-        Process = $null; Timer = $null; OutputTask = $null; ErrorTask = $null; StopRequested = $false
+        Process = $null; Timer = $null; Run = $null; StopRequested = $false
+        LastTerminal = $null; LastTerminalError = $null; CliClick = $false; OwnerClosed = $false
     })
+    $chatControls = @{ Dialog = $dialog; RepositoryRoot = $RepositoryRoot; AgentPicker = $cmbAgent; TerminalButton = $btnTerminal; State = $chatState }
     $saveSessions = {
         param($Session)
         if (-not $Session) { $Session = $chatState.Session }
@@ -212,6 +231,10 @@ function Show-CodeCliDialog {
             $item = $cmbConversation.Items[$idx]
             if ($item -and $item.Session -eq $chatState.Session) { $item.Label = "$(try { ([datetime]::Parse($chatState.Session.UpdatedUtc)).ToLocalTime().ToString('MM-dd HH:mm') } catch { '' })  $($chatState.Session.Title)" }
         }
+    }.GetNewClosure()
+    $showReady = {
+        if ($chatState.Process -or -not $cmbAgent.SelectedItem) { return }
+        $lblStatus.Text = 'Ready - ' + (Get-CodeCliProfileSummary $cmbAgent.SelectedItem)
     }.GetNewClosure()
     $refreshConversations = {
         if ($chatState.Loading) { return }
@@ -253,7 +276,7 @@ function Show-CodeCliDialog {
         }
         $txtPrompt.Focus()
     }.GetNewClosure()
-    $cmbAgent.Add_SelectedIndexChanged({ & $refreshConversations }.GetNewClosure())
+    $cmbAgent.Add_SelectedIndexChanged({ & $refreshConversations; & $showReady }.GetNewClosure())
     $cmbConversation.Add_SelectedIndexChanged({
         if ($chatState.Loading -or $cmbConversation.SelectedIndex -lt 0) { return }
         $chatState.Session = $cmbConversation.SelectedItem.Session
@@ -276,15 +299,37 @@ function Show-CodeCliDialog {
             [void][System.Windows.Forms.MessageBox]::Show("Could not open agent settings:`r`n$($_.Exception.Message)", 'Configure agents', 'OK', 'Error')
         }
     }.GetNewClosure())
+    $btnTerminal.Add_Click({
+        $agentProfile = $cmbAgent.SelectedItem
+        try {
+            $opened = Open-CodeCliTerminal $agentProfile $RepositoryRoot
+            $chatState.LastTerminal = $opened
+            $lblStatus.Text = "$($opened.agent) opened in a terminal window - sign in or use its / commands there, then send prompts here"
+            if ($CockpitState -and $CockpitState.AppendLog) { & $CockpitState.AppendLog "Opened $($opened.agent) in a terminal in $RepositoryRoot`: $($opened.commandLine)" }
+        } catch {
+            $chatState.LastTerminalError = $_.Exception.Message
+            $lblStatus.Text = 'Could not open the terminal'
+            # A CLI request reports the error in its reply; a message box would hold the request until closed.
+            if (-not $chatState.CliClick) {
+                [void][System.Windows.Forms.MessageBox]::Show("Could not open the terminal:`r`n$($_.Exception.Message)", 'Open in terminal', 'OK', 'Error')
+            }
+        }
+    }.GetNewClosure())
+    $dialog.Add_Shown({
+        if (-not $OpenTerminal) { return }
+        try { [void](Invoke-CodeCliTerminalButton $chatControls $TerminalAgent) }
+        catch { $lblStatus.Text = "Could not open the terminal: $($_.Exception.Message)" }
+    }.GetNewClosure())
 
     $setBusy = {
         param([bool]$Busy)
-        $btnSend.Enabled = -not $Busy; $btnStop.Enabled = $Busy; $btnConfigure.Enabled = -not $Busy
+        $btnSend.Enabled = -not $Busy; $btnStop.Enabled = $Busy; $btnConfigure.Enabled = -not $Busy; $btnTerminal.Enabled = -not $Busy
         $btnNewConversation.Enabled = -not $Busy; $cmbAgent.Enabled = -not $Busy; $cmbConversation.Enabled = -not $Busy
+        $barProgress.Visible = $Busy
     }.GetNewClosure()
     $addAgentMessage = {
-        param($Session, [string]$Text)
-        [void]$Session.Messages.Add([pscustomobject]@{ Role = 'agent'; Content = $Text.Trim(); CreatedUtc = [datetime]::UtcNow.ToString('o') })
+        param($Session, [string]$Text, [string]$Activity = '')
+        [void]$Session.Messages.Add([pscustomobject]@{ Role = 'agent'; Content = $Text.Trim(); Activity = $Activity; CreatedUtc = [datetime]::UtcNow.ToString('o') })
         & $saveSessions $Session
         & $renderSession
     }.GetNewClosure()
@@ -298,27 +343,30 @@ function Show-CodeCliDialog {
     $pollTimer.Add_Tick({
         $process = $chatState.Process
         if (-not $process) { $pollTimer.Stop(); return }
-        if (-not $process.HasExited -or -not $chatState.OutputTask.IsCompleted -or -not $chatState.ErrorTask.IsCompleted) { return }
+        $run = $chatState.Run
+        try {
+            $read = Read-CodeCliOutputPump $run.Pump
+            $shown = Add-CodeCliRunOutput $run $read.Lines
+            if ($shown) { $transcript.AppendText($shown) }
+            $status = Get-CodeCliRunStatus $run
+            if ($lblStatus.Text -ne $status) { $lblStatus.Text = $status }
+            if (-not ($process.HasExited -and $read.Done)) { return }
+        } catch {
+            # Reading failed: stop reading, say so once, and finish when the process ends.
+            foreach ($stream in $run.Pump.Streams) { $stream.Done = $true }
+            $transcript.AppendText("  (could not read more output: $($_.Exception.Message))`r`n")
+            if (-not $process.HasExited) { return }
+        }
         $pollTimer.Stop()
         try {
             $exitCode = $process.ExitCode
-            $response = [string]$chatState.OutputTask.Result
-            $errorText = [string]$chatState.ErrorTask.Result
-            if ($response.Length -gt 20000) { $response = $response.Substring($response.Length - 20000) }
-            if ($chatState.StopRequested) {
-                $response = if ([string]::IsNullOrWhiteSpace($response)) { 'Stopped.' } else { "$response`r`n`r`nStopped." }
-            } elseif ([string]::IsNullOrWhiteSpace($response)) {
-                if ($errorText) { $response = "Command failed (exit $exitCode).`r`n$errorText" }
-                else { $response = "Command finished with exit code $exitCode and no response." }
-            } elseif ($exitCode -ne 0 -and $errorText) {
-                $response += "`r`n`r`nCommand error (exit $exitCode):`r`n$errorText"
-            }
-            & $addAgentMessage $chatState.RunSession $response
+            $lblStatus.Text = Get-CodeCliRunStatus $run $exitCode -Ended -Stopped $chatState.StopRequested
+            & $addAgentMessage $chatState.RunSession (Get-CodeCliRunReply $run $exitCode $chatState.StopRequested) (Get-CodeCliRunActivity $run)
         } catch {
             $transcript.AppendText("`r`nCould not record the agent response: $($_.Exception.Message)`r`n")
         } finally {
             $process.Dispose()
-            $chatState.Process = $null; $chatState.OutputTask = $null; $chatState.ErrorTask = $null; $chatState.RunSession = $null
+            $chatState.Process = $null; $chatState.Run = $null; $chatState.RunSession = $null
             & $setBusy $false
             [void]$txtPrompt.Focus()
         }
@@ -335,8 +383,14 @@ function Show-CodeCliDialog {
         if ([string]::IsNullOrWhiteSpace($requestText)) { return }
         $session = $chatState.Session
         if (-not $session.Confirmed) {
+            $reach = switch ([string]$agentProfile.Permission) {
+                'read' { 'can read this project folder' }
+                'edit' { 'can read and change files in this project folder' }
+                default { 'runs with full access: it can change files and run commands in this project folder without asking' }
+            }
+            if (-not (Get-CodeCliAgentKind ([string]$agentProfile.Command))) { $reach = 'can read and change files in this project folder' }
             $answer = [System.Windows.Forms.MessageBox]::Show(
-                "The selected local agent can read and change files in this project folder. Continue?`r`n`r`n$RepositoryRoot",
+                "$($agentProfile.Name) $reach. Continue?`r`n`r`n$RepositoryRoot",
                 'Allow this conversation', 'YesNo', 'Warning')
             if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
             $session.Confirmed = $true
@@ -357,7 +411,7 @@ function Show-CodeCliDialog {
             if ($agentProfile.PromptMode -eq 'argument' -and $isBatchFile) {
                 throw "'$command' is a batch file. Windows re-reads a batch file's command line, so a prompt passed as an argument is cut at its first line break and its symbols can run as commands. Open Configure agents and set Prompt delivery to Standard input for this agent."
             }
-            $arguments = [string]$agentProfile.Arguments
+            $arguments = Get-CodeCliEffectiveArguments $agentProfile
             if ($agentProfile.PromptMode -eq 'argument') {
                 $token = ConvertTo-CodeCliArgument $prompt
                 if ($arguments.Contains('{prompt}')) { $arguments = $arguments.Replace('{prompt}', $token) }
@@ -384,8 +438,7 @@ function Show-CodeCliDialog {
             $chatState.Process = $process
             $chatState.RunSession = $session
             $chatState.StopRequested = $false
-            $chatState.OutputTask = $process.StandardOutput.ReadToEndAsync()
-            $chatState.ErrorTask = $process.StandardError.ReadToEndAsync()
+            $chatState.Run = New-CodeCliRun $process
             try {
                 if ($agentProfile.PromptMode -eq 'stdin') {
                     # ProcessStartInfo.StandardInputEncoding does not exist on .NET Framework (the
@@ -400,12 +453,15 @@ function Show-CodeCliDialog {
                 Write-Debug "The agent closed standard input early: $($_.Exception.Message)"
             }
             & $setBusy $true
+            $transcript.AppendText("Agent (working...)`r`n")
+            $lblStatus.Text = 'Working 0:00'
             $pollTimer.Start()
         } catch {
             if ($process) { Invoke-CodeCliProcessTreeKill $process; $process.Dispose() }
             $chatState.Process = $null; $chatState.RunSession = $null
             & $addAgentMessage $session "Could not run the selected command: $($_.Exception.Message)"
             & $setBusy $false
+            $lblStatus.Text = 'Could not start the command - see the reply above'
         }
     }.GetNewClosure())
     $btnStop.Add_Click({
@@ -416,22 +472,27 @@ function Show-CodeCliDialog {
     }.GetNewClosure())
     $dialog.Add_FormClosing({
         param($closingForm, $closingArgs)
-        if ($chatState.Process -and -not $chatState.Process.HasExited) {
+        # The cockpit's own close already warned about a running agent.
+        if ($chatState.Process -and -not $chatState.Process.HasExited -and -not $chatState.OwnerClosed) {
             $answer = [System.Windows.Forms.MessageBox]::Show('Stop the running agent and close this conversation?', 'Close conversation', 'YesNo', 'Warning')
             if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { $closingArgs.Cancel = $true; return }
             Invoke-CodeCliProcessTreeKill $chatState.Process
         }
     }.GetNewClosure())
 
-    $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    # Modeless: the cockpit stays usable while the conversation is open. A button's DialogResult closes
+    # only a modal form, so Close and Esc call Close(), and cleanup runs when the window has closed.
+    $btnClose.Add_Click({ $dialog.Close() }.GetNewClosure())
     $dialog.CancelButton = $btnClose
-    if ($cmbAgent.Items.Count -gt 0) { $cmbAgent.SelectedIndex = 0 }
-    try {
-        if ($Owner) { [void]$dialog.ShowDialog($Owner) } else { [void]$dialog.ShowDialog() }
-        return [pscustomobject]@{ Used = $true; AppName = $AppName; RepositoryRoot = $RepositoryRoot }
-    } finally {
+    $dialog.Add_FormClosed({
+        if ($CockpitState) { $CockpitState.AgentChat = $null }
+        $tips.Dispose()
         if ($chatState.Timer) { try { $chatState.Timer.Stop(); $chatState.Timer.Dispose() } catch { Write-Debug 'The poll timer was already disposed.' } }
         if ($chatState.Process) { Invoke-CodeCliProcessTreeKill $chatState.Process; try { $chatState.Process.Dispose() } catch { Write-Debug 'The agent process was already disposed.' } }
-        $dialog.Dispose()
-    }
+    }.GetNewClosure())
+    Connect-CodeCliChatToOwner $chatControls ($Owner -as [System.Windows.Forms.Form])
+    if ($cmbAgent.Items.Count -gt 0) { $cmbAgent.SelectedIndex = 0 }
+    if ($CockpitState) { $CockpitState.AgentChat = $chatControls }
+    if ($Owner) { $dialog.Show($Owner) } else { $dialog.Show() }
+    return [pscustomobject]@{ Used = $true; AppName = $AppName; RepositoryRoot = $RepositoryRoot; Dialog = $dialog }
 }

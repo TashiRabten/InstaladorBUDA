@@ -1,4 +1,4 @@
-function Resolve-CliTab {
+﻿function Resolve-CliTab {
     param($GuiState, $Request)
     $tabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.Id })
     $selector = if (Test-CliProperty $Request 'session') { 'session' } elseif (Test-CliProperty $Request 'tab') { 'tab' } else { $null }
@@ -39,6 +39,7 @@ function Get-CockpitStatus {
             workflow = $c.Workflow.Text; task = "$($c.Task.SelectedItem)"
             bootstrapRoot = $c.BootstrapRoot.Text; githubRepo = $c.BootstrapRepo.Text
             bootstrapMessage = $c.BootstrapMessage.Text; gitleaksPath = $c.BootstrapScanner.Text
+            visibility = $c.Visibility.Text; visibilityRepo = [string]$state.VisibilityRepo; visibilityToggle = [bool]($c.Buttons.MakePublic.Enabled -and $c.Buttons.MakePrivate.Enabled)
             lastCommands = @($state.LastCommands); logTail = $tail
         }
     }
@@ -142,6 +143,7 @@ function Invoke-CockpitCliConfiguration {
 
     Select-CockpitCliTarget $Request $Controls
     $textFields = [ordered]@{
+        prBase = 'PrBase'; prHead = 'PrHead'; prTitle = 'PrTitle'; prBody = 'PrBody'; prNumber = 'PrNumber'
         version = 'Version'; notes = 'Notes'; workflow = 'Workflow'; gitPaths = 'GitAdd'
         commitMessage = 'GitMessage'; bootstrapRoot = 'BootstrapRoot'; githubRepo = 'BootstrapRepo'
         bootstrapMessage = 'BootstrapMessage'; gitleaksPath = 'BootstrapScanner'
@@ -149,7 +151,9 @@ function Invoke-CockpitCliConfiguration {
     foreach ($field in $textFields.Keys) {
         if (Test-CliProperty $Request $field) {
             $control = $Controls[$textFields[$field]]
-            $control.Text = [string]$Request.$field
+            $value = [string]$Request.$field
+            if ($field -eq 'prBody') { $value = $value.Replace("`r`n", "`n").Replace("`n", "`r`n") }
+            $control.Text = $value
         }
     }
     if (Test-CliProperty $Request 'publish') { $Controls.Publish.Checked = [bool]$Request.publish }
@@ -179,7 +183,7 @@ function Invoke-CockpitRequest {
     $command = [string]$Request.command
     if ($command -eq 'help') { return (Get-CockpitHelp) }
     if ($command -eq 'list') {
-        $targets = @($script:AppRegistry.Apps | ForEach-Object { [pscustomobject]@{ name = $_.name; repoRoot = $_.repoRoot; workflow = $_.workflow; tagPrefix = $_.tagPrefix; bundles = @($_.bundles); models = @($_.uploadModels | ForEach-Object { $_.name }) } })
+        $targets = Get-CockpitTargetList
         return [pscustomobject]@{ ok = $true; command = 'list'; data = @{ targets = $targets; tasks = @($script:Tasks | ForEach-Object { [pscustomobject]@{ name = $_.name; runOn = $_.runOn } }) } }
     }
     if ($command -eq 'status') { return (Get-CockpitStatus $GuiState $Request) }
@@ -208,14 +212,15 @@ function Invoke-CockpitRequest {
         $c.BootstrapName.Text = [string]$Request.name
         $c.BootstrapRoot.Text = [string]$Request.repoRoot
         $c.BootstrapRepo.Text = [string]$Request.githubRepo
-        $state.LastAddedApp = $null
-        $state.LastAddAppError = $null
+        $state.LastAddedApp = $null; $state.LastAddedWiring = $null; $state.LastAddAppError = $null
         $button = $c.Buttons.AddApp
         Assert-CockpitButtonReady $button 'The Add app control is unavailable.'
         $button.PerformClick()
         if ($state.LastAddAppError) { throw [string]$state.LastAddAppError }
         if (-not $state.LastAddedApp) { throw 'The app was not registered. Check the selected tab log for details.' }
-        return [pscustomobject]@{ ok = $true; command = $command; data = @{ app = $state.LastAddedApp; tabId = $state.Id; configPath = $cfgFile; bootstrapReady = $true } }
+        $wiring = @($state.LastAddedWiring)
+        return [pscustomobject]@{ ok = $true; command = $command; data = @{ app = $state.LastAddedApp; tabId = $state.Id; configPath = $cfgFile; bootstrapReady = $true
+            entry = (Get-App $state.LastAddedApp); wiring = $wiring; fullyWired = (@($wiring | Where-Object { -not $_.ok }).Count -eq 0) } }
     }
     if ($command -eq 'gitignore') {
         $page = Resolve-CliTab $GuiState $Request
@@ -278,7 +283,7 @@ function Invoke-CockpitRequest {
     }
     if ($command -eq 'close') {
         if (-not $Request.confirm) { throw 'close requires confirm:true.' }
-        $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
+        $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { Test-CockpitTabBusy $_.Tag })
         if ($runningTabs.Count -gt 0 -and -not $Request.stopRunning) {
             $names = ($runningTabs | ForEach-Object { $_.Text }) -join ', '
             throw "Closing the cockpit will stop running jobs ($names). Pass stopRunning:true to confirm."
@@ -325,19 +330,20 @@ function Invoke-CockpitRequest {
 
     if ($command -ne 'action') { throw "Unknown command '$command'. Use help for the command list." }
     $actionName = ([string]$Request.action).ToLowerInvariant()
+    if ($actionName.StartsWith('fix-')) { return (Invoke-FixInboxCliRequest $GuiState $Request $state $actionName) }
     if ($state.IsRunning -and $actionName -ne 'update') { throw "Tab $($state.Id) already has a job running. Use another tab or wait for it to finish." }
     if ($actionName -eq 'actions-secrets') { Assert-ActionsSecretsRequest $Request $c }
-    if ($actionName -eq 'code-cli' -and -not $Request.confirm) { throw 'code-cli requires confirm:true.' }
+    if ($actionName -in @('code-cli', 'code-cli-terminal') -and -not $Request.confirm) { throw "$actionName requires confirm:true." }
     if ($actionName -eq 'update') {
         if (-not $Request.confirm) { throw 'update requires confirm:true.' }
-        $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.IsRunning })
+        $runningTabs = @($GuiState.Tabs.TabPages | Where-Object { Test-CockpitTabBusy $_.Tag })
         if ($runningTabs.Count -gt 0 -and -not $Request.stopRunning) {
             $names = ($runningTabs | ForEach-Object { $_.Text }) -join ', '
             throw "Updating will stop running jobs ($names). Pass stopRunning:true to confirm."
         }
     }
     $app = Get-App ([string]$c.Target.SelectedItem)
-    $confirmationActions = @('upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-commit','git-push','create-repo','actions-secrets','code-cli','task')
+    $confirmationActions = @('git-pull','merge-save','merge-continue','retry-last-job','rerun','rerun-failed','pr-create','pr-merge','upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','task')
     if ($actionName -eq 'retag-deploy') {
         if (-not $Request.replaceExistingTag) { throw 'retag-deploy requires replaceExistingTag:true.' }
         if (-not $Request.confirm) { throw 'retag-deploy requires confirm:true.' }
@@ -346,6 +352,7 @@ function Invoke-CockpitRequest {
     if ($actionName -in $confirmationActions -and -not $c.DryRun.Checked -and -not $Request.confirm) {
         throw "$actionName requires confirm:true (or set dryRun:true to preview only)."
     }
+    $gitActionButtons = @{ 'git-status' = 'GitStatus'; 'git-add' = 'GitAdd'; 'git-unstage' = 'GitUnstage'; 'git-commit' = 'GitCommit'; 'git-push' = 'GitPush' }
     if ($actionName -eq 'actions-secrets') {
         $state.LastActionsSecretsResult = $null
         $button = $c.Buttons.ActionsSecrets
@@ -362,7 +369,7 @@ function Invoke-CockpitRequest {
             else { $button = $c.Buttons.Dispatch }
         }
         'load-runs' { $button = $c.Buttons.LoadRuns }
-        'publish-run' {
+        { $_ -in @('publish-run','rerun','rerun-failed') } {
             if (-not $Request.runId) { throw 'publish-run requires runId.' }
             if (-not $state.LoadedRuns -or $state.LoadedRuns.Count -eq 0) {
                 Assert-CockpitButtonReady $c.Buttons.LoadRuns 'The Load runs control is unavailable.'
@@ -371,7 +378,9 @@ function Invoke-CockpitRequest {
             $idx = -1
             for ($i = 0; $i -lt $state.LoadedRuns.Count; $i++) { if ("$($state.LoadedRuns[$i].databaseId)" -eq "$($Request.runId)") { $idx = $i; break } }
             if ($idx -lt 0) { throw "Run $($Request.runId) is not available in the selected workflow." }
-            $c.Run.SelectedIndex = $idx; $button = $c.Buttons.PublishRun
+            $c.Run.SelectedIndex = $idx
+            if ($actionName -eq 'merge-file') { return [pscustomobject]@{ok=$true;command='action';data=@{file=[string]$merge.Files.SelectedItem;status=$merge.Status.Text}} }
+            $button = switch ($actionName) { 'rerun' { $c.Buttons.Rerun } 'rerun-failed' { $c.Buttons.RerunFailed } default { $c.Buttons.PublishRun } }
         }
         'undraft' { $button = $c.Buttons.Undraft }
         'make-public' {
@@ -388,15 +397,21 @@ function Invoke-CockpitRequest {
             if ($idx -lt 0) { throw "Unknown task '$($Request.taskName)'." }
             $c.Task.SelectedIndex = $idx; $button = $c.Buttons.Task
         }
-        'git-status' { $button = $c.Buttons.GitStatus }
-        'git-add' { $button = $c.Buttons.GitAdd }
-        'git-commit' { $button = $c.Buttons.GitCommit }
-        'git-push' { $button = $c.Buttons.GitPush }
+        'git-pull' { $button = $c.Buttons.GitPull }
+        'merge-tool' { $button = $c.Buttons.MergeTool }
+        { $_ -in @('merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue') } {
+            $button = Resolve-MergeCliButton $Request $state $c $app $actionName
+        }
+        'retry-last-job' { $button = $c.Buttons.RetryLast }
+        'pr-list' { $button = $c.Buttons.PrList }
+        'pr-create' { $button = $c.Buttons.PrCreate }
+        'pr-merge' { $button = $c.Buttons.PrMerge }
+        { $gitActionButtons.ContainsKey($_) } { $button = $c.Buttons[$gitActionButtons[$_]] }
         'create-repo' {
             Invoke-CockpitCliRepository $Request $c
             $button = $c.Buttons.CreateRepo
         }
-        'code-cli' {
+        { $_ -in @('code-cli', 'code-cli-terminal') } {
             if (-not $app -or -not $app.repoRoot -or -not (Test-Path -LiteralPath $app.repoRoot -PathType Container)) {
                 throw 'The selected target has no available project folder.'
             }
@@ -409,6 +424,7 @@ function Invoke-CockpitRequest {
     if ($actionName -eq 'actions-secrets') {
         return (Invoke-CockpitButtonAfterReply $button ([pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $state.Id; action = 'actions-secrets'; target = "$($c.Target.SelectedItem)"; scheduled = $true; modal = 'actions-secrets'; dryRun = [bool]$c.DryRun.Checked } }))
     }
+    if ($actionName -eq 'code-cli-terminal') { return (Invoke-CodeCliTerminalRequest $GuiState $Request $state $app $button) }
     if ($actionName -eq 'code-cli') {
         return (Invoke-CockpitButtonAfterReply $button ([pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $state.Id; action = 'code-cli'; target = [string]$app.name; repoRoot = [string]$app.repoRoot; scheduled = $true; modal = 'code-cli' } }))
     }
