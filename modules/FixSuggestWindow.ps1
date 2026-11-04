@@ -123,7 +123,7 @@ function Sync-FixWindowButtons {
     $row = Get-FixSelectedRow $Window
     $v = $Window.Verification
     $b.ForgetPassphrase.Enabled = [bool]$Window.Passphrase
-    foreach ($name in @('Refresh', 'Register', 'OpenInbox', 'CloseInbox')) { $b[$name].Enabled = $admin }
+    foreach ($name in @('Refresh', 'Register', 'OpenInbox', 'CloseInbox', 'AddDeveloper')) { $b[$name].Enabled = $admin }
     $b.Verify.Enabled = [bool]$row -and $admin
     $b.OpenPr.Enabled = [bool]$v -and [bool]$v.Result.valid
     $b.Decline.Enabled = [bool]$row -and [string]$row.status -in @('received', 'pr-opened') -and $admin

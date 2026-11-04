@@ -6,7 +6,7 @@
 function Get-FixCliActions {
     return @('fix-status', 'fix-settings', 'fix-suggest', 'fix-suggest-send', 'fix-suggest-refresh', 'fix-inbox', 'fix-inbox-refresh',
         'fix-inbox-verify', 'fix-inbox-open-pr', 'fix-inbox-decline', 'fix-inbox-merge', 'fix-inbox-register', 'fix-inbox-open',
-        'fix-inbox-close', 'fix-inbox-forget', 'fix-registry-verify', 'fix-registry-sign', 'fix-sign-out')
+        'fix-inbox-close', 'fix-inbox-forget', 'fix-inbox-add-developer', 'fix-registry-verify', 'fix-registry-sign', 'fix-sign-out')
 }
 
 function Assert-FixCliRequest {
@@ -24,7 +24,7 @@ function Invoke-FixInboxCliRequest {
     $dry = [bool]$TabState.Controls.DryRun.Checked
     $confirmed = [bool]$Request.confirm
     $needsConfirm = @{ 'fix-settings' = 1; 'fix-suggest-send' = 1; 'fix-inbox-open-pr' = 1; 'fix-inbox-decline' = 1; 'fix-inbox-merge' = 1; 'fix-registry-sign' = 1
-        'fix-inbox-register' = 1; 'fix-inbox-open' = 1; 'fix-inbox-close' = 1 }
+        'fix-inbox-register' = 1; 'fix-inbox-open' = 1; 'fix-inbox-close' = 1; 'fix-inbox-add-developer' = 1 }
     if ($needsConfirm.ContainsKey($Action) -and -not $confirmed -and -not ($dry -and $Action -ne 'fix-settings')) {
         throw "$Action requires confirm:true (or dryRun:true to see what it would do)."
     }
@@ -110,6 +110,16 @@ function Select-FixCliTarget {
         'fix-inbox-open-pr' { return 'OpenPr' }
         'fix-inbox-register' { return 'Register' }
         'fix-inbox-forget' { return 'ForgetPassphrase' }
+        'fix-inbox-add-developer' {
+            # apps: "all" (the default) or a list of TradutorBUDA / ScanBUDA. The link, when there is one, opens in
+            # the window only; the reply says whether it was shown, never the link.
+            foreach ($field in @('name', 'email')) { if (-not (Test-CliProperty $Request $field)) { throw "fix-inbox-add-developer needs $field." } }
+            $apps = if (Test-CliProperty $Request 'apps') { @($Request.apps | ForEach-Object { [string]$_ }) } else { @('all') }
+            $id = if (Test-CliProperty $Request 'developerId') { [string]$Request.developerId } else { '' }
+            $key = if (Test-CliProperty $Request 'publicKey') { [string]$Request.publicKey } else { '' }
+            $Window.CliDeveloper = Build-FixDeveloperRequest ([string]$Request.name) ([string]$Request.email) $id ($apps -contains 'all') $apps $key
+            return 'AddDeveloper'
+        }
         { $_ -in @('fix-inbox-open', 'fix-inbox-close') } {
             if (Test-CliProperty $Request 'maxPerHour') { $Window.CliMaxPerHour = [int]$Request.maxPerHour }
             if ($Action -eq 'fix-inbox-open') { return 'OpenInbox' } else { return 'CloseInbox' }
@@ -139,14 +149,14 @@ function Invoke-FixCliClick {
     if ($Window.Busy) { throw 'The window is busy with another step; try again when it finishes.' }
     Sync-FixWindowButtons $Window
     if (-not $button.Enabled) {
-        $Window.CliBundle = $null; $Window.CliNote = $null; $Window.CliMaxPerHour = $null
+        $Window.CliBundle = $null; $Window.CliNote = $null; $Window.CliMaxPerHour = $null; $Window.CliDeveloper = $null
         throw "'$($button.Text)' is not available now (sign in, pick or verify a bundle, or select a row with the right status first)."
     }
     Assert-CockpitButtonReady $button "The '$($button.Text)' control is unavailable."
     $Window.CliConfirmed = $Confirmed
     $Window.CliOverrideCeiling = [bool]$Request.overrideCeiling
     try { $button.PerformClick() }
-    finally { $Window.CliConfirmed = $false; $Window.CliNote = $null; $Window.CliOverrideCeiling = $false; $Window.CliBundle = $null; $Window.CliMaxPerHour = $null }
+    finally { $Window.CliConfirmed = $false; $Window.CliNote = $null; $Window.CliOverrideCeiling = $false; $Window.CliBundle = $null; $Window.CliMaxPerHour = $null; $Window.CliDeveloper = $null }
     if ($Window.LastError) { throw $Window.LastError }
 }
 
@@ -183,7 +193,7 @@ function Get-FixCliWindowStatus {
     $summary = $Window.Summary
     return @{
         open = $true; busy = [bool]$Window.Busy; status = $Window.LastStatus; lastError = $Window.LastError
-        passphraseSet = [bool]$Window.Passphrase; lastRegistered = $Window.LastRegistered
+        passphraseSet = [bool]$Window.Passphrase; lastRegistered = $Window.LastRegistered; lastInvite = $Window.LastInvite
         bundle = if ($summary) { @{ path = $summary.path; title = $summary.title; app = $summary.app; appVersion = $summary.appVersion; sha256 = $summary.sha256; keyId = $summary.keyId; files = @($summary.files); capabilities = @($summary.capabilities) } } else { $null }
         rows = @($Window.Rows); lastSent = $Window.LastSent; verification = $verification
         lastPrUrl = $Window.LastPrUrl; lastOutcome = $Window.LastOutcome

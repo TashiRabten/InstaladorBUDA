@@ -10,6 +10,7 @@ $FakeInbox = @{
     Users = @{}          # email → @{ Id; Password; Email; DeveloperId; KeyId; PublicKey; Apps; Active } (KeyId empty: invited, not registered)
     Rows = New-Object System.Collections.ArrayList
     Calls = New-Object System.Collections.Generic.List[object]
+    Invites = New-Object System.Collections.ArrayList
     NextId = 1; Open = $true; MaxPerHour = 10
 }
 
@@ -40,6 +41,7 @@ function Invoke-FixInboxHttp {
     $FakeInbox.Calls.Add([pscustomobject]@{ Method = $Method; Uri = $Uri; Headers = $Headers.Clone(); Body = $text; ContentType = $ContentType })
     $u = [Uri]$Uri
     $path = $u.AbsolutePath
+    if ($path -eq '/functions/v1/dev-invite') { return (Invoke-FakeDevInvite $Headers $text) }
     if ($Headers.apikey -ne $FakeInbox.Key) { return (Build-FakeInboxReply 401 @{ message = 'Invalid API key' }) }
     if ($path -eq '/auth/v1/token') { return (Invoke-FakeInboxAuth $text) }
     if ($path -like '/rest/v1/rpc/*') { return (Invoke-FakeInboxRpc $path.Substring('/rest/v1/rpc/'.Length) ($text | ConvertFrom-Json)) }
@@ -50,6 +52,27 @@ function Invoke-FixInboxHttp {
     if ($Method -eq 'GET') { return (Build-FakeInboxReply 200 @(Select-FakeInboxColumns @(Select-FakeInboxOwnRows $caller $query) $query.select)) }
     if ($Method -eq 'POST') { return (Invoke-FakeInboxInsert $caller ($text | ConvertFrom-Json) $query.select) }
     return (Build-FakeInboxReply 403 @{ code = '42501'; message = 'permission denied (no update or delete for clients)' })
+}
+
+# The dev-invite Edge Function (SuiteBUDA supabase/functions/dev-invite). The platform refuses a publishable key sent
+# as a Bearer (it is not a JWT). The e-mail decides what Supabase did: cota@… its hourly quota, fora@… its built-in
+# sender's refusal, an account already in Users → exists (a recovery link); anything else is e-mailed.
+function Invoke-FakeDevInvite {
+    param([hashtable]$Headers, [string]$Text)
+    if ($Headers.ContainsKey('Authorization')) { return (Build-FakeInboxReply 401 @{ code = 401; message = 'Invalid JWT' }) }
+    $j = $Text | ConvertFrom-Json
+    if ([string]$j.passphrase -ne $FakeInbox.Passphrase) { return (Build-FakeInboxReply 401 @{ error = 'passphrase'; message = 'Frase-senha de administrador incorreta.' }) }
+    $email = ([string]$j.email).ToLowerInvariant()
+    [void]$FakeInbox.Invites.Add($j)
+    $existing = $FakeInbox.Users.ContainsKey($email)
+    $outcome = if ($existing) { 'exists' } elseif ($email -like 'cota@*') { 'quota' } elseif ($email -like 'fora@*') { 'not_authorized' } else { 'sent' }
+    if (-not $existing) { Add-FakeInboxUser $email '' ('uid-' + ($FakeInbox.Users.Count + 1)) }
+    $u = $FakeInbox.Users[$email]
+    $u.DeveloperId = [string]$j.developerId; $u.Apps = @($j.apps); $u.Active = $true
+    $type = if ($outcome -eq 'exists') { 'recovery' } else { 'invite' }
+    $link = if ($outcome -eq 'sent') { $null } else { "https://glossariobudacompact.netlify.app/set-password?token_hash=fakehash-$($u.Id)&type=$type" }
+    return (Build-FakeInboxReply 200 @{ userId = $u.Id; email = $email; developerId = [string]$j.developerId; apps = @($j.apps); emailSent = ($outcome -eq 'sent')
+        outcome = $outcome; emailError = $(if ($outcome -eq 'quota') { 'email rate limit exceeded' } else { '' }); link = $link; linkType = $type; actionLink = $null })
 }
 
 function Invoke-FakeInboxAuth {

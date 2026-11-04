@@ -47,6 +47,7 @@ $moduleFiles = [ordered]@{
     '#__FIX_INBOX_GUI_MODULE__' = 'modules\FixInboxGui.ps1'
     '#__FIX_SUGGEST_WINDOW_MODULE__' = 'modules\FixSuggestWindow.ps1'
     '#__FIX_INBOX_WINDOW_MODULE__' = 'modules\FixInboxWindow.ps1'
+    '#__FIX_DEV_INVITE_MODULE__' = 'modules\FixDevInvite.ps1'
     '#__FIX_INBOX_CLI_MODULE__' = 'modules\FixInboxCli.ps1'
     '#__COCKPIT_HELP_MODULE__' = 'modules\CockpitHelp.ps1'
     '#__COCKPIT_MODULE__' = 'modules\Cockpit.ps1'

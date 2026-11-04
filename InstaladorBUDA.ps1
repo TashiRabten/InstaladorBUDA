@@ -72,6 +72,7 @@ if ($script:SelfPath) {
     . (Join-Path $AppDir 'modules\FixInboxGui.ps1')
     . (Join-Path $AppDir 'modules\FixSuggestWindow.ps1')
     . (Join-Path $AppDir 'modules\FixInboxWindow.ps1')
+    . (Join-Path $AppDir 'modules\FixDevInvite.ps1')
     . (Join-Path $AppDir 'modules\FixInboxCli.ps1')
     . (Join-Path $AppDir 'modules\CockpitHelp.ps1')
     . (Join-Path $AppDir 'modules\Cockpit.ps1')
@@ -97,6 +98,7 @@ if ($script:SelfPath) {
     #__FIX_INBOX_GUI_MODULE__
     #__FIX_SUGGEST_WINDOW_MODULE__
     #__FIX_INBOX_WINDOW_MODULE__
+    #__FIX_DEV_INVITE_MODULE__
     #__FIX_INBOX_CLI_MODULE__
     #__COCKPIT_HELP_MODULE__
     #__COCKPIT_MODULE__

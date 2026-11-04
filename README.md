@@ -549,6 +549,35 @@ confirmed actions. **Verificar arquivo local...** verifies a bundle on disk the 
 has just verified (each must have been invited first, with the same e-mail); **Fechar a caixa** /
 **Abrir a caixa** is the kill switch.
 
+**Adicionar desenvolvedor...** (`modules/FixDevInvite.ps1`) brings a new developer in from this one
+window, with the admin passphrase already given to **Usar**. The form takes the name, the e-mail, the
+id (`contrib/<id>/`, made from the name without accents until it is edited), the apps (all apps by
+default, which the inbox stores as `SuiteBUDA` and the registry as an empty `apps` list) and,
+optionally, the person's public key (the `ssh-ed25519` line from Segurança do código ▸ Copiar chave
+pública). After one confirmation it calls the `dev-invite` Edge Function (SuiteBUDA
+`supabase/functions/dev-invite`; the publishable key goes on `apikey` only, the passphrase in the
+body, checked by the function itself). The function approves the e-mail, creates the account with
+`generateLink` type `invite`, asks Supabase to e-mail the invitation, and calls `dev_access_grant`
+(SuiteBUDA `supabase/20261104_dev_access_grant.sql`, service role only) so the account is a developer
+at once and its apps register their own key on the first `/sugerir`. The invitation lands on the
+site's `/set-password` page.
+
+When Supabase cannot send the e-mail, the account is still created and a separate window
+(**Convite para …**) says why, with a ready message and the link to copy and send by hand. The two
+known causes: the hourly e-mail quota, and Supabase's built-in sender, which writes only to members
+of the Supabase organization, so **every outside invitation needs custom SMTP configured in the
+project** before it can be e-mailed. An account that already existed gets no e-mail and the link
+(which sets a new password) is shown the same way. The link appears only in that window: it is not
+written to the log and not returned to the CLI (the reply says only whether it was shown). If the
+account was created but `dev_access_grant` failed, the status says so; adding the same person again
+completes it.
+
+With a public key, the cockpit then verifies the registry, writes its next version with the new
+developer beside it (unsigned) and opens the `registry-sign` console, where the root password is
+typed; **Verificar registro** afterwards confirms it. Without a key the person can already send
+suggestions; add them again with the key when it arrives. With **Dry run**, only the request
+(passphrase left out) is written to the log.
+
 Closing the window does not cost a suggestion its PR. What a job found out goes to the row with
 the passphrase, and the passphrase leaves with the window, so the status first waits in
 `%LOCALAPPDATA%\InstaladorBUDA\fix-pending.json` (no secret in it; `fix-status` lists it as
@@ -578,12 +607,14 @@ the passphrase left out) and the PR commands are written to the session log.
 Every button has a CLI action that clicks it (`fix-settings`, `fix-suggest`, `fix-suggest-send`,
 `fix-suggest-refresh`, `fix-sign-out`, `fix-inbox`, `fix-inbox-refresh`, `fix-inbox-verify` with
 `id` or `bundle`, `fix-inbox-open-pr` with `overrideCeiling`, `fix-inbox-decline` with `id` and
-`note`, `fix-inbox-merge` with `id`, `fix-inbox-register`, `fix-inbox-open` / `fix-inbox-close` with
+`note`, `fix-inbox-merge` with `id`, `fix-inbox-register`, `fix-inbox-add-developer` with `name`,
+`email` and optionally `developerId`, `apps` (`["all"]` by default, or `TradutorBUDA` / `ScanBUDA`)
+and `publicKey`, `fix-inbox-open` / `fix-inbox-close` with
 `maxPerHour`, `fix-inbox-forget`, `fix-registry-verify`, `fix-registry-sign` with `in` and
 `rootIdentity`); `fix-status` reads both windows. Signing in and **Usar** have no CLI route on
 purpose: the password and the passphrase are typed only in the window, and a request carrying
 `password`, `passphrase`, `token` or a similar field is refused. Actions that send, build, push,
-merge, decline, register or switch the inbox need `"confirm":true` (or `dryRun:true`).
+merge, decline, register, add a developer or switch the inbox need `"confirm":true` (or `dryRun:true`).
 SuiteBUDA suggestions use its installed runtime and the trusted launcher dispatcher
 `org.budasuite.SuiteBUDA --bundle-tool`; the reviewer and PR both use `app/src/main/java`.
 Configure the SuiteBUDA install in **Configurar...** or `fix-settings` with `suiteInstall`
@@ -818,6 +849,7 @@ update each `repoRoot` if your checkout paths differ.
 | `modules/FixInboxGui.ps1` | The session group, Configurar..., sign-in and passphrase rows, the step runner. |
 | `modules/FixSuggestWindow.ps1` | Sugerir mudança (PR): the contributor's window. |
 | `modules/FixInboxWindow.ps1` | Sugestões recebidas: the maintainer's window. |
+| `modules/FixDevInvite.ps1` | Adicionar desenvolvedor...: the form, the `dev-invite` request, the invitation-link window, the next registry version for signing. |
 | `modules/FixInboxCli.ps1` | The `fix-*` CLI actions and `fix-status`. |
 | `modules/CockpitHelp.ps1` | The CLI `help` reply: commands, parameters, examples and safety notes. |
 | `modules/Cockpit.ps1` | CLI requests and named-pipe cockpit commands. |
@@ -826,6 +858,7 @@ update each `repoRoot` if your checkout paths differ.
 | `build-exe.ps1` | Compiles `InstaladorBUDA.exe` via ps2exe. |
 | `tests/FixInbox.Tests.ps1`, `tests/FixInbox.Flow.ps1`, `tests/FixInboxFakes.ps1`, `tests/fixtures/MakeBundle.java` | Suggested changes end to end with no network (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixInbox.Tests.ps1`); needs TradutorBUDA's compiled classes beside this folder and its installed runtime, else the end-to-end part is skipped. |
 | `tests/FixPrStatus.Tests.ps1` | A window closed during a PR, merge or decline job: the status waits and reaches the row; a row whose status was lost finds its PR on GitHub (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixPrStatus.Tests.ps1`). |
+| `tests/FixDevInvite.Tests.ps1` | Adicionar desenvolvedor... with no network: the form's rules, the request, each e-mail outcome through the real window driven by the CLI, the link kept out of CLI replies, the registry draft (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixDevInvite.Tests.ps1`). |
 | `tests/AddApp.Tests.ps1` | Add app tests: workflow reading, the complete entry, the wiring check, and the GUI and CLI add paths in a headless STA window (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\AddApp.Tests.ps1`). |
 | `tests/GitUnstage.Tests.ps1` | Unstage from the button and from `git-unstage` on a temporary repository: the named paths leave the index, their files stay as they are, and the other git actions still reach their buttons (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\GitUnstage.Tests.ps1`). |
 | `MDs/adicionar-app.md` | Checklist of what a fully wired app needs (Portuguese). |

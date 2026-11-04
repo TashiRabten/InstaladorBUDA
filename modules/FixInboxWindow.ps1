@@ -13,7 +13,8 @@
 # installed BundleTool against a worktree at the release tag. The report puts the problems, what the
 # change adds and what goes beyond the developer's ceiling FIRST, then the diff. Nothing is built before
 # "Abrir PR…" is confirmed; "Mesclar PR…" and "Recusar…" are separate confirmed actions. Also: register
-# the verified registry's developers in the inbox, and open or close the inbox (the kill switch).
+# the verified registry's developers in the inbox, open or close the inbox (the kill switch), and add a new
+# developer (FixDevInvite.ps1).
 
 function Show-FixInboxWindow {
     param($TabState, $Owner)
@@ -29,6 +30,7 @@ function Show-FixInboxWindow {
     $b.Register = Add-FixControl $form 'Button' 'Registrar desenvolvedores...' 16 126 220 $UI.BtnH
     $b.OpenInbox = Add-FixControl $form 'Button' 'Abrir a caixa' 244 126 120 $UI.BtnH
     $b.CloseInbox = Add-FixControl $form 'Button' 'Fechar a caixa' 372 126 130 $UI.BtnH
+    $b.AddDeveloper = Add-FixControl $form 'Button' 'Adicionar desenvolvedor...' 510 126 210 $UI.BtnH
     $c.Rows = Add-FixListView $form 16 170 ($width - 32) 140 @(@('Nº', 46), @('Recebido', 112), @('Desenvolvedor', 110), @('App', 96), @('Versão', 60), @('Título', 270), @('Status', 80), @('PR', 60))
     $c.Report = Add-FixControl $form 'TextBox' '' 16 320 ($width - 32) ($bottom - 332) 'Top,Bottom,Left,Right'
     $c.Report.Multiline = $true; $c.Report.ReadOnly = $true; $c.Report.ScrollBars = 'Both'; $c.Report.WordWrap = $false; $c.Report.MaxLength = 0
@@ -40,7 +42,8 @@ function Show-FixInboxWindow {
     $c.Status = Add-FixControl $form 'Label' '' 400 ($bottom + 4) ($width - 400 - 124) $UI.RowH 'Bottom,Left,Right'
     $b.Close = Add-FixControl $form 'Button' 'Fechar' ($width - 116) $bottom 100 $UI.BtnH 'Bottom,Right'
     $steps = @{ Refresh = 'inbox-refresh'; Verify = 'inbox-verify'; VerifyFile = 'inbox-verify-file'; Settings = 'settings'; OpenPr = 'inbox-open-pr'
-        Decline = 'inbox-decline'; Merge = 'inbox-merge'; Register = 'inbox-register'; OpenInbox = 'inbox-open'; CloseInbox = 'inbox-close' }
+        Decline = 'inbox-decline'; Merge = 'inbox-merge'; Register = 'inbox-register'; OpenInbox = 'inbox-open'; CloseInbox = 'inbox-close'
+        AddDeveloper = 'inbox-add-developer' }
     foreach ($name in $steps.Keys) { $step = $steps[$name]; $b[$name].Add_Click({ Invoke-FixWindowStep $w $step }.GetNewClosure()) }
     $c.Rows.Add_SelectedIndexChanged({ Sync-FixWindowButtons $w }.GetNewClosure())
     $b.Close.Add_Click({ $form.Close() }.GetNewClosure())
@@ -49,6 +52,7 @@ function Show-FixInboxWindow {
     $tips.SetToolTip($b.Merge, 'gh pr merge --merge into main. Only after the build, the targeted tests and the Codacy mirror on the PR worktree.')
     $tips.SetToolTip($b.Register, 'fix_inbox_register_developer for each developer of the verified, root-signed registry (each one invited first, in Authentication > Users, with the same e-mail).')
     $tips.SetToolTip($b.CloseInbox, 'The kill switch: fix_inbox_set_open false. New suggestions are refused until the inbox is opened again.')
+    $tips.SetToolTip($b.AddDeveloper, 'dev-invite (Supabase): approves the e-mail, creates the account, e-mails the invitation (or gives you the link when Supabase cannot) and makes it a developer. With the public key: the next registry version and its signing console.')
     Show-FixSessionLabel $w
     Sync-FixWindowButtons $w
     if ($Owner) { $form.Show($Owner) } else { $form.Show() }

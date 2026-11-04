@@ -126,6 +126,7 @@ function Build-FixWindowState {
         Busy = $false; LastError = $null; LastStatus = ''; CliConfirmed = $false; CliNote = $null; CliOverrideCeiling = $false
         LastPrUrl = $null; LastOutcome = $null; LastSent = $null
         Passphrase = $null; CliMaxPerHour = $null; LastRegistered = $null
+        CliDeveloper = $null; LastInvite = $null; InviteForm = $null
     })
 }
 
@@ -170,6 +171,7 @@ function Invoke-FixWindowStep {
             'inbox-register' { Invoke-FixInboxRegister $Window }
             'inbox-open' { Invoke-FixInboxSetOpen $Window $true }
             'inbox-close' { Invoke-FixInboxSetOpen $Window $false }
+            'inbox-add-developer' { Invoke-FixInboxAddDeveloper $Window }
             'settings' { Show-FixInboxSettingsDialog $Window.TabState $Window.Form; Show-FixSessionLabel $Window }
             default { throw "Passo desconhecido: $Step" }
         }
