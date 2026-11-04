@@ -552,8 +552,10 @@ has just verified (each must have been invited first, with the same e-mail); **F
 **Adicionar desenvolvedor...** (`modules/FixDevInvite.ps1`) brings a new developer in from this one
 window, with the admin passphrase already given to **Usar**. The form takes the name, the e-mail, the
 id (`contrib/<id>/`, made from the name without accents until it is edited), the apps (all apps by
-default, which the inbox stores as `SuiteBUDA` and the registry as an empty `apps` list) and,
-optionally, the person's public key (the `ssh-ed25519` line from Segurança do código ▸ Copiar chave
+default, which the inbox stores as `SuiteBUDA` and the registry as an empty `apps` list),
+**Sênior** (may change protected classes: kept on the developer row in Supabase and written as
+`"senior": true` in the registry entry; only the root-signed registry grants it) and, optionally, the
+person's public key (the `ssh-ed25519` line from Segurança do código ▸ Copiar chave
 pública). After one confirmation it calls the `dev-invite` Edge Function (SuiteBUDA
 `supabase/functions/dev-invite`; the publishable key goes on `apikey` only, the passphrase in the
 body, checked by the function itself). The function approves the e-mail, creates the account with
@@ -577,6 +579,26 @@ developer beside it (unsigned) and opens the `registry-sign` console, where the 
 typed; **Verificar registro** afterwards confirms it. Without a key the person can already send
 suggestions; add them again with the key when it arrives. With **Dry run**, only the request
 (passphrase left out) is written to the log.
+
+**Only an invited developer compiles** (TradutorBUDA, ScanBUDA and SuiteBUDA from the versions that carry
+`security/Invitation.java`), and the invitation is all it takes: the person accepts it on the site and does nothing
+else. The first time Ctrl+F5 or Ctrl+Shift+F5 asks for the password, the app asks for the e-mail and password of the
+invitation instead: it signs in, makes the developer identity with that same password (the site's page asks for at
+least 10 characters, the identity's rule), and the inbox's `dev-attest` function confirms the invitation for that
+key. It signs who, which apps, senior and until when (30 days, renewed at each unlock while the account is signed in)
+with the inbox's key, whose public half every app carries (`registry\convites.pub`; the private half is the
+function's secret `DEV_INVITE_SIGNING_KEY`). SuiteBUDA takes the identity an app made and confirms through the
+session the apps share. The apps check that signature offline. The root-signed registry still counts: it holds your
+own keys, and a key it suspends stays out whatever the inbox says; each app keeps the newest one verified
+(`developer-registry.json`; on the maintainer's computer it also reads
+`%LOCALAPPDATA%\InstaladorBUDA\registry\developers.json`) and refuses an older one. With neither, Ctrl+F5,
+Ctrl+Shift+F5 and the agent's tool (in SuiteBUDA, keeping a build) are refused and at start a kept patch is set
+aside; a lapsed confirmation stops a compile, not a start. The review of a suggestion still needs the key in the
+registry: **Chaves novas...** lists the keys the inbox confirmed that the registry lacks
+(`fix_inbox_developer_keys`), writes its next version with them (the invitation's apps and senior; nothing removed)
+and opens the signing console; **Publicar registro** runs `registry-verify` and sends the signed file as text
+(`dev_registry_publish`) for the apps. Server side: SuiteBUDA `supabase/20261104_dev_registry.sql` and
+`supabase/functions/dev-attest`.
 
 Closing the window does not cost a suggestion its PR. What a job found out goes to the row with
 the passphrase, and the passphrase leaves with the window, so the status first waits in
@@ -608,13 +630,14 @@ Every button has a CLI action that clicks it (`fix-settings`, `fix-suggest`, `fi
 `fix-suggest-refresh`, `fix-sign-out`, `fix-inbox`, `fix-inbox-refresh`, `fix-inbox-verify` with
 `id` or `bundle`, `fix-inbox-open-pr` with `overrideCeiling`, `fix-inbox-decline` with `id` and
 `note`, `fix-inbox-merge` with `id`, `fix-inbox-register`, `fix-inbox-add-developer` with `name`,
-`email` and optionally `developerId`, `apps` (`["all"]` by default, or `TradutorBUDA` / `ScanBUDA`)
-and `publicKey`, `fix-inbox-open` / `fix-inbox-close` with
+`email` and optionally `developerId`, `apps` (`["all"]` by default, or `TradutorBUDA` / `ScanBUDA`),
+`publicKey` and `senior`, `fix-inbox-new-keys`, `fix-registry-publish`, `fix-inbox-open` / `fix-inbox-close` with
 `maxPerHour`, `fix-inbox-forget`, `fix-registry-verify`, `fix-registry-sign` with `in` and
 `rootIdentity`); `fix-status` reads both windows. Signing in and **Usar** have no CLI route on
 purpose: the password and the passphrase are typed only in the window, and a request carrying
 `password`, `passphrase`, `token` or a similar field is refused. Actions that send, build, push,
-merge, decline, register, add a developer or switch the inbox need `"confirm":true` (or `dryRun:true`).
+merge, decline, register, add a developer or a key, publish the registry or switch the inbox need
+`"confirm":true` (or `dryRun:true`).
 SuiteBUDA suggestions use its installed runtime and the trusted launcher dispatcher
 `org.budasuite.SuiteBUDA --bundle-tool`; the reviewer and PR both use `app/src/main/java`.
 Configure the SuiteBUDA install in **Configurar...** or `fix-settings` with `suiteInstall`
@@ -849,7 +872,7 @@ update each `repoRoot` if your checkout paths differ.
 | `modules/FixInboxGui.ps1` | The session group, Configurar..., sign-in and passphrase rows, the step runner. |
 | `modules/FixSuggestWindow.ps1` | Sugerir mudança (PR): the contributor's window. |
 | `modules/FixInboxWindow.ps1` | Sugestões recebidas: the maintainer's window. |
-| `modules/FixDevInvite.ps1` | Adicionar desenvolvedor...: the form, the `dev-invite` request, the invitation-link window, the next registry version for signing. |
+| `modules/FixDevInvite.ps1` | Adicionar desenvolvedor...: the form, the `dev-invite` request, the invitation-link window, the next registry version for signing; Chaves novas... and Publicar registro. |
 | `modules/FixInboxCli.ps1` | The `fix-*` CLI actions and `fix-status`. |
 | `modules/CockpitHelp.ps1` | The CLI `help` reply: commands, parameters, examples and safety notes. |
 | `modules/Cockpit.ps1` | CLI requests and named-pipe cockpit commands. |

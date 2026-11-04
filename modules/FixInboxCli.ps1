@@ -6,7 +6,8 @@
 function Get-FixCliActions {
     return @('fix-status', 'fix-settings', 'fix-suggest', 'fix-suggest-send', 'fix-suggest-refresh', 'fix-inbox', 'fix-inbox-refresh',
         'fix-inbox-verify', 'fix-inbox-open-pr', 'fix-inbox-decline', 'fix-inbox-merge', 'fix-inbox-register', 'fix-inbox-open',
-        'fix-inbox-close', 'fix-inbox-forget', 'fix-inbox-add-developer', 'fix-registry-verify', 'fix-registry-sign', 'fix-sign-out')
+        'fix-inbox-close', 'fix-inbox-forget', 'fix-inbox-add-developer', 'fix-inbox-new-keys', 'fix-registry-verify', 'fix-registry-sign',
+        'fix-registry-publish', 'fix-sign-out')
 }
 
 function Assert-FixCliRequest {
@@ -24,7 +25,7 @@ function Invoke-FixInboxCliRequest {
     $dry = [bool]$TabState.Controls.DryRun.Checked
     $confirmed = [bool]$Request.confirm
     $needsConfirm = @{ 'fix-settings' = 1; 'fix-suggest-send' = 1; 'fix-inbox-open-pr' = 1; 'fix-inbox-decline' = 1; 'fix-inbox-merge' = 1; 'fix-registry-sign' = 1
-        'fix-inbox-register' = 1; 'fix-inbox-open' = 1; 'fix-inbox-close' = 1; 'fix-inbox-add-developer' = 1 }
+        'fix-inbox-register' = 1; 'fix-inbox-open' = 1; 'fix-inbox-close' = 1; 'fix-inbox-add-developer' = 1; 'fix-inbox-new-keys' = 1; 'fix-registry-publish' = 1 }
     if ($needsConfirm.ContainsKey($Action) -and -not $confirmed -and -not ($dry -and $Action -ne 'fix-settings')) {
         throw "$Action requires confirm:true (or dryRun:true to see what it would do)."
     }
@@ -109,6 +110,8 @@ function Select-FixCliTarget {
         'fix-inbox-refresh' { return 'Refresh' }
         'fix-inbox-open-pr' { return 'OpenPr' }
         'fix-inbox-register' { return 'Register' }
+        'fix-inbox-new-keys' { return 'NewKeys' }
+        'fix-registry-publish' { return 'PublishRegistry' }
         'fix-inbox-forget' { return 'ForgetPassphrase' }
         'fix-inbox-add-developer' {
             # apps: "all" (the default) or a list of TradutorBUDA / ScanBUDA. The link, when there is one, opens in
@@ -117,7 +120,8 @@ function Select-FixCliTarget {
             $apps = if (Test-CliProperty $Request 'apps') { @($Request.apps | ForEach-Object { [string]$_ }) } else { @('all') }
             $id = if (Test-CliProperty $Request 'developerId') { [string]$Request.developerId } else { '' }
             $key = if (Test-CliProperty $Request 'publicKey') { [string]$Request.publicKey } else { '' }
-            $Window.CliDeveloper = Build-FixDeveloperRequest ([string]$Request.name) ([string]$Request.email) $id ($apps -contains 'all') $apps $key
+            $senior = (Test-CliProperty $Request 'senior') -and [bool]$Request.senior
+            $Window.CliDeveloper = Build-FixDeveloperRequest ([string]$Request.name) ([string]$Request.email) $id ($apps -contains 'all') $apps $key $senior
             return 'AddDeveloper'
         }
         { $_ -in @('fix-inbox-open', 'fix-inbox-close') } {
@@ -193,7 +197,7 @@ function Get-FixCliWindowStatus {
     $summary = $Window.Summary
     return @{
         open = $true; busy = [bool]$Window.Busy; status = $Window.LastStatus; lastError = $Window.LastError
-        passphraseSet = [bool]$Window.Passphrase; lastRegistered = $Window.LastRegistered; lastInvite = $Window.LastInvite
+        passphraseSet = [bool]$Window.Passphrase; lastRegistered = $Window.LastRegistered; lastInvite = $Window.LastInvite; lastNewKeys = $Window.LastNewKeys; lastPublished = $Window.LastPublished
         bundle = if ($summary) { @{ path = $summary.path; title = $summary.title; app = $summary.app; appVersion = $summary.appVersion; sha256 = $summary.sha256; keyId = $summary.keyId; files = @($summary.files); capabilities = @($summary.capabilities) } } else { $null }
         rows = @($Window.Rows); lastSent = $Window.LastSent; verification = $verification
         lastPrUrl = $Window.LastPrUrl; lastOutcome = $Window.LastOutcome

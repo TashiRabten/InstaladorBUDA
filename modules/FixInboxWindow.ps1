@@ -31,6 +31,8 @@ function Show-FixInboxWindow {
     $b.OpenInbox = Add-FixControl $form 'Button' 'Abrir a caixa' 244 126 120 $UI.BtnH
     $b.CloseInbox = Add-FixControl $form 'Button' 'Fechar a caixa' 372 126 130 $UI.BtnH
     $b.AddDeveloper = Add-FixControl $form 'Button' 'Adicionar desenvolvedor...' 510 126 210 $UI.BtnH
+    $b.NewKeys = Add-FixControl $form 'Button' 'Chaves novas...' 728 126 130 $UI.BtnH
+    $b.PublishRegistry = Add-FixControl $form 'Button' 'Publicar registro' 866 126 142 $UI.BtnH
     $c.Rows = Add-FixListView $form 16 170 ($width - 32) 140 @(@('Nº', 46), @('Recebido', 112), @('Desenvolvedor', 110), @('App', 96), @('Versão', 60), @('Título', 270), @('Status', 80), @('PR', 60))
     $c.Report = Add-FixControl $form 'TextBox' '' 16 320 ($width - 32) ($bottom - 332) 'Top,Bottom,Left,Right'
     $c.Report.Multiline = $true; $c.Report.ReadOnly = $true; $c.Report.ScrollBars = 'Both'; $c.Report.WordWrap = $false; $c.Report.MaxLength = 0
@@ -43,7 +45,7 @@ function Show-FixInboxWindow {
     $b.Close = Add-FixControl $form 'Button' 'Fechar' ($width - 116) $bottom 100 $UI.BtnH 'Bottom,Right'
     $steps = @{ Refresh = 'inbox-refresh'; Verify = 'inbox-verify'; VerifyFile = 'inbox-verify-file'; Settings = 'settings'; OpenPr = 'inbox-open-pr'
         Decline = 'inbox-decline'; Merge = 'inbox-merge'; Register = 'inbox-register'; OpenInbox = 'inbox-open'; CloseInbox = 'inbox-close'
-        AddDeveloper = 'inbox-add-developer' }
+        AddDeveloper = 'inbox-add-developer'; NewKeys = 'inbox-new-keys'; PublishRegistry = 'inbox-publish-registry' }
     foreach ($name in $steps.Keys) { $step = $steps[$name]; $b[$name].Add_Click({ Invoke-FixWindowStep $w $step }.GetNewClosure()) }
     $c.Rows.Add_SelectedIndexChanged({ Sync-FixWindowButtons $w }.GetNewClosure())
     $b.Close.Add_Click({ $form.Close() }.GetNewClosure())
@@ -51,6 +53,8 @@ function Show-FixInboxWindow {
     $tips.SetToolTip($b.OpenPr, 'Worktree at the release tag on the branch the registry assigns → bundle-apply → commit as you → Gitleaks → push → gh pr create --base main. Asks first.')
     $tips.SetToolTip($b.Merge, 'gh pr merge --merge into main. Only after the build, the targeted tests and the Codacy mirror on the PR worktree.')
     $tips.SetToolTip($b.Register, 'fix_inbox_register_developer for each developer of the verified, root-signed registry (each one invited first, in Authentication > Users, with the same e-mail).')
+    $tips.SetToolTip($b.NewKeys, 'fix_inbox_developer_keys: the keys invited people registered from their apps that the registry lacks go into its next version; the signing console opens (root password there).')
+    $tips.SetToolTip($b.PublishRegistry, 'dev_registry_publish: the signed registry, after BundleTool verifies it, where the apps fetch it. Only an invited developer compiles in the apps.')
     $tips.SetToolTip($b.CloseInbox, 'The kill switch: fix_inbox_set_open false. New suggestions are refused until the inbox is opened again.')
     $tips.SetToolTip($b.AddDeveloper, 'dev-invite (Supabase): approves the e-mail, creates the account, e-mails the invitation (or gives you the link when Supabase cannot) and makes it a developer. With the public key: the next registry version and its signing console.')
     Show-FixSessionLabel $w

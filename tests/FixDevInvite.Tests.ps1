@@ -122,6 +122,7 @@ try {
     Assert-That ($call.Headers.apikey -eq $FakeInbox.Key -and -not $call.Headers.ContainsKey('Authorization')) 'request: the publishable key on apikey only'
     $body = $call.Body | ConvertFrom-Json
     Assert-Equal "$($body.passphrase)|$($body.email)|$($body.developerId)|$(@($body.apps) -join ',')" "$($FakeInbox.Passphrase)|tenzin@example.org|tenzin-wangmo|SuiteBUDA" 'request: passphrase, e-mail, id and apps in the body'
+    Assert-That ($body.senior -eq $false -and $last.senior -eq $false) 'request: not senior unless asked'
     Assert-That ($FakeInbox.Users['tenzin@example.org'].Active -and $FakeInbox.Users['tenzin@example.org'].DeveloperId -eq 'tenzin-wangmo') 'sent: the account is a developer'
     Assert-That (-not $w.InviteForm) 'sent: no link window'
 
@@ -166,6 +167,43 @@ try {
     $kept = @($doc.developers | Where-Object { $_.id -eq 'mantenedor' })
     Assert-That ($kept.Count -eq 1 -and $kept[0].senior -and @($kept[0].ceiling) -join ',' -eq 'FILE_WRITE') 'registry: the others are kept as they were'
     Assert-That ($script:SignCalls.Count -eq 1 -and $script:SignCalls[0] -match [regex]::Escape($draft) -and $script:SignCalls[0] -match 'root\.json') 'registry: the signing console opens with the draft and the root identity beside root.pub'
+
+    # ── Senior: asked in the request, kept in the reply, written to the registry entry ──
+    $seniorKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISeniorDoKarma Karma'
+    $reply = Add-Developer @{ name = 'Karma Senior'; email = 'karma@example.org'; publicKey = $seniorKey; senior = $true }
+    $last = $reply.data.inbox.lastInvite
+    Assert-That (((Get-LastInviteCall).Body | ConvertFrom-Json).senior -eq $true -and $last.senior) 'senior: in the request and the reply'
+    $entry = @(([IO.File]::ReadAllText($last.registryDraft) | ConvertFrom-Json).developers | Where-Object { $_.id -eq 'karma-senior' })
+    Assert-That ($entry.Count -eq 1 -and $entry[0].senior -eq $true -and $entry[0].publicKey -eq $seniorKey) 'senior: "senior": true in the registry entry'
+
+    # ── Chaves novas...: the keys the apps registered that the registry lacks go into its next version ──
+    function Get-TestKeyRow { param($Id, $Email, $Name, $Apps, $Senior, $KeyApps, $KeyId, $Key)
+        [pscustomobject]@{ developer_id = $Id; email = $Email; name = $Name; apps = $Apps; senior = $Senior; active = $true; key_apps = $KeyApps
+            key_id = $KeyId; public_key = $Key; registered_at = '2026-11-04T12:00:00Z' } }
+    [void]$FakeInbox.AccessKeys.Add((Get-TestKeyRow 'mantenedor' 'raiz@example.org' 'Mantenedor' @('SuiteBUDA') $true @('TradutorBUDA') '0123456789abcdef' 'ssh-ed25519 AAAAexistente'))
+    [void]$FakeInbox.AccessKeys.Add((Get-TestKeyRow 'serafim' 'serafim@example.org' 'Serafim' @('SuiteBUDA') $true @('TradutorBUDA') 'aaaabbbbccccdddd' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISerafimTradutor Serafim'))
+    [void]$FakeInbox.AccessKeys.Add((Get-TestKeyRow 'serafim' 'serafim@example.org' 'Serafim' @('SuiteBUDA') $true @('ScanBUDA') 'eeeeffff00001111' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISerafimScan Serafim'))
+    [void]$FakeInbox.AccessKeys.Add((Get-TestKeyRow 'pema' 'pema@example.org' 'Pema' @('ScanBUDA') $false @('ScanBUDA') '1111222233334444' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPemaScan Pema'))
+    $signBefore = $script:SignCalls.Count
+    $nk = (Invoke-Cli @{ command = 'action'; action = 'fix-inbox-new-keys'; session = '1'; confirm = $true }).data.inbox.lastNewKeys
+    Assert-Equal "$($nk.requested)|$(@($nk.added) -join ',')" '4|serafim,serafim,pema' 'new keys: the three keys the registry lacks; the one it has is left out'
+    $doc = [IO.File]::ReadAllText([string]$nk.draft) | ConvertFrom-Json
+    $ser = @($doc.developers | Where-Object { $_.id -eq 'serafim' }); $pema = @($doc.developers | Where-Object { $_.id -eq 'pema' })
+    Assert-That ($doc.version -eq 7 -and $ser.Count -eq 2 -and @($ser | Where-Object { $_.senior -and @($_.apps).Count -eq 0 }).Count -eq 2) 'new keys: both keys of a senior developer of every app, senior, every app'
+    Assert-That ($pema.Count -eq 1 -and (@($pema[0].apps) -join ',') -eq 'ScanBUDA' -and -not $pema[0].senior) 'new keys: a ScanBUDA developer gets ScanBUDA only, not senior'
+    Assert-That (@($doc.developers | Where-Object { $_.id -eq 'mantenedor' }).Count -eq 1 -and [IO.File]::ReadAllText([string]$nk.draft) -notmatch 'null') 'new keys: nothing removed, no null'
+    Assert-That ($script:SignCalls.Count -eq $signBefore + 1 -and $script:SignCalls[$script:SignCalls.Count - 1] -match [regex]::Escape([string]$nk.draft)) 'new keys: the signing console opens with the draft'
+
+    # ── Publicar registro: the signed file as text, where the apps fetch it ──
+    $published = (Invoke-Cli @{ command = 'action'; action = 'fix-registry-publish'; session = '1'; confirm = $true }).data.inbox.lastPublished
+    Assert-That ($published -eq 6 -and $FakeInbox.Published.Count -eq 1 -and $FakeInbox.Published[0] -eq [IO.File]::ReadAllText($registry)) 'publish: the signed file, byte for byte, as v6'
+    [void](Invoke-Cli @{ command = 'action'; action = 'fix-registry-publish'; session = '1'; confirm = $true })
+    Assert-That ($FakeInbox.Published.Count -eq 1) 'publish: the same file again changes nothing'
+    $script:VerifyValid = $false
+    $err = Invoke-CliError @{ command = 'action'; action = 'fix-registry-publish'; session = '1'; confirm = $true }
+    Assert-That ($err -match 'não confere' -and $FakeInbox.Published.Count -eq 1) 'publish: a registry that does not verify is not sent'
+    $script:VerifyValid = $true
+    Assert-That ((Invoke-CliError @{ command = 'action'; action = 'fix-registry-publish'; session = '1' }) -match 'confirm') 'publish: needs confirm'
 
     # ── The same key under another id, and a registry that does not check, are refused ──
     $reply = $null

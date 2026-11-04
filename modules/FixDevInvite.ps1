@@ -7,7 +7,7 @@
 # version of the root-signed registry is written beside it and the signing console opens (the root password is typed
 # there, never here). The link is shown only in that window: it is not logged and not returned to the CLI.
 
-$UI.FixDevInvite = @{ Width = 600; Height = 420 }
+$UI.FixDevInvite = @{ Width = 600; Height = 470 }
 $UI.FixInviteLink = @{ Width = 640; Height = 470 }
 $script:FixDevApps = @('TradutorBUDA', 'ScanBUDA')
 
@@ -23,7 +23,7 @@ function Get-FixDeveloperId {
 # One request from the form or the CLI. All apps: 'SuiteBUDA' for the inbox (a developer of the whole suite) and no
 # app at all in the registry (FixBundles reads an empty list as every app); otherwise the same apps in both.
 function Build-FixDeveloperRequest {
-    param([string]$Name, [string]$Email, [string]$Id, [bool]$AllApps, [string[]]$Apps, [string]$PublicKey)
+    param([string]$Name, [string]$Email, [string]$Id, [bool]$AllApps, [string[]]$Apps, [string]$PublicKey, [bool]$Senior = $false)
     # Lists, not $(if …): Windows PowerShell turns an empty array returned that way into $null, and @($null) into [null].
     $inbox = New-Object 'System.Collections.Generic.List[string]'
     $registry = New-Object 'System.Collections.Generic.List[string]'
@@ -34,6 +34,7 @@ function Build-FixDeveloperRequest {
     return [pscustomobject]@{
         Name = $name; Email = $Email.Trim().ToLowerInvariant(); Id = $developerId; AllApps = $AllApps
         InboxApps = $inbox.ToArray(); RegistryApps = $registry.ToArray(); PublicKey = ($PublicKey -replace '\s+', ' ').Trim()
+        Senior = $Senior
     }
 }
 
@@ -53,7 +54,8 @@ function Test-FixDeveloperRequest {
 function Send-FixDevInvite {
     param($Settings, [Security.SecureString]$Passphrase, $Developer, [switch]$DryRun)
     $uri = (Get-FixInboxBaseUrl $Settings) + '/functions/v1/dev-invite'
-    $fields = @{ email = $Developer.Email; name = $Developer.Name; developerId = $Developer.Id; apps = @($Developer.InboxApps) }
+    $fields = @{ email = $Developer.Email; name = $Developer.Name; developerId = $Developer.Id; apps = @($Developer.InboxApps)
+        senior = [bool]$Developer.Senior }
     if ($DryRun) { return [pscustomobject]@{ DryRun = $true; Requests = @("POST $uri  $(ConvertTo-Json -InputObject $fields -Compress) + passphrase (não mostrada)") } }
     Assert-FixInboxConfigured $Settings
     if (-not $Passphrase -or $Passphrase.Length -eq 0) { throw 'Digite a frase-senha de administrador e clique Usar.' }
@@ -104,6 +106,8 @@ function Write-FixRegistryDraft {
         id = $Developer.Id; name = $Developer.Name; email = $Developer.Email; publicKey = $Developer.PublicKey
         apps = @($Developer.RegistryApps); ceiling = @(); active = $true
     }
+    # Only the root-signed mark lets a developer change protected classes; it is written only when chosen.
+    if ($Developer.Senior) { $entry | Add-Member -NotePropertyName senior -NotePropertyValue $true }
     $version = [long]$doc.version + 1
     $developers = @($doc.developers | Where-Object { [string]$_.id -ne $Developer.Id }) + @($entry)
     $draft = [pscustomobject][ordered]@{ format = [string]$doc.format; version = $version; developers = $developers }
@@ -138,6 +142,7 @@ function Invoke-FixInboxAddDeveloper {
     }
     if (-not $Window.Passphrase) { throw 'Digite a frase-senha de administrador e clique Usar.' }
     $apps = if ($developer.AllApps) { 'todos os apps' } else { @($developer.InboxApps) -join ', ' }
+    if ($developer.Senior) { $apps += '; sênior, pode mudar classes protegidas' }
     $then = if ($developer.PublicKey) { "`n`nDepois, a próxima versão do registro com a chave dele é escrita e o console de assinatura abre (senha da raiz)." } else { '' }
     if (-not (Confirm-FixStep $Window "Adicionar $($developer.Name) <$($developer.Email)> como desenvolvedor ($apps), com o id $($developer.Id)?`n`nO Supabase cria a conta e manda o convite; se não puder mandar, você recebe o link para mandar.$then" 'Adicionar desenvolvedor')) {
         Write-FixWindowStatus $Window 'Nenhum desenvolvedor adicionado.'
@@ -146,7 +151,7 @@ function Invoke-FixInboxAddDeveloper {
     Write-FixWindowStatus $Window "Adicionando $($developer.Name)..."
     $result = Send-FixDevInvite $settings $Window.Passphrase $developer
     $Window.LastInvite = [pscustomobject]@{ developerId = $developer.Id; email = $developer.Email; userId = [string]$result.userId
-        emailSent = [bool]$result.emailSent; outcome = [string]$result.outcome; grantError = $(if ($result.error -eq 'grant') { [string]$result.message } else { $null })
+        senior = [bool]$developer.Senior; emailSent = [bool]$result.emailSent; outcome = [string]$result.outcome; grantError = $(if ($result.error -eq 'grant') { [string]$result.message } else { $null })
         linkShown = $false; registryDraft = $null }
     $outcomeText = Get-FixInviteOutcomeText $result
     Write-FixLog $Window @("desenvolvedor $($developer.Id) <$($developer.Email)>: conta $($result.userId); $outcomeText")
@@ -170,7 +175,125 @@ function Invoke-FixInboxAddDeveloper {
     Write-FixWindowStatus $Window ("$($developer.Id): " + $(if ($result.emailSent) { 'convite enviado pelo Supabase.' } elseif ($result.link) { 'conta criada; mande o convite (janela aberta).' } else { 'feito.' }) + $left) ([bool]($result.error -eq 'grant'))
 }
 
-# The form: name, e-mail, id (follows the name until edited), the apps, and the public key when there is one.
+# ── The invited people's keys and the published registry ────────────────────────────────────────────
+# From the apps' version that checks it, only an invited developer compiles: an active entry for that app in the
+# root-signed registry. The person's app registers the key of their computer with the invited account
+# (dev_access_key_request); "Chaves novas..." writes the next registry version with the keys it does not have yet;
+# once signed, "Publicar registro" puts it where the apps fetch it (dev_registry_publish).
+
+# The keys invited people asked access with, one row per key (fix_inbox_developer_keys).
+function Get-FixDeveloperKeys {
+    param($Settings, [Security.SecureString]$Passphrase, [switch]$DryRun)
+    $rows = Invoke-FixInboxRpc $Settings 'fix_inbox_developer_keys' @{} $Passphrase -DryRun:$DryRun
+    if ($DryRun) { return $rows }
+    return @($rows | Where-Object { $_ })
+}
+
+# Of $Rows, the active keys the registry does not have (compared by the key itself), one entry each: the invitation's
+# apps (all apps → none listed, as FixBundles reads it) and senior when the invitation said so.
+function Get-FixNewRegistryEntries {
+    param($Registry, $Rows)
+    $have = @{}
+    foreach ($d in @($Registry.developers)) { $have[(([string]$d.publicKey) -split ' ')[1]] = $true }
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($row in @($Rows)) {
+        $blob = (([string]$row.public_key) -split ' ')[1]
+        if (-not $blob -or $have.ContainsKey($blob) -or -not $row.active) { continue }
+        $have[$blob] = $true
+        $apps = New-Object 'System.Collections.Generic.List[string]'
+        if (@($row.apps) -notcontains 'SuiteBUDA') { foreach ($a in $script:FixDevApps) { if (@($row.apps) -contains $a) { $apps.Add($a) } } }
+        $entry = [pscustomobject][ordered]@{ id = [string]$row.developer_id; name = [string]$row.name; email = [string]$row.email
+            publicKey = [string]$row.public_key; apps = $apps.ToArray(); ceiling = @(); active = $true }
+        if ($row.senior) { $entry | Add-Member -NotePropertyName senior -NotePropertyValue $true }
+        $entries.Add($entry)
+    }
+    return $entries.ToArray()
+}
+
+# The next version of the root-signed registry with $Entries added (nothing removed), unsigned, beside the registry.
+function Write-FixRegistryDraftEntries {
+    param($Settings, $Entries)
+    $check = Invoke-FixRegistryVerify $Settings
+    if (-not $check.valid) { throw ('O registro atual não confere, então ele não foi estendido: ' + (@($check.problems) -join '; ')) }
+    $doc = [IO.File]::ReadAllText([string]$Settings.registryPath) | ConvertFrom-Json
+    $version = [long]$doc.version + 1
+    $draft = [pscustomobject][ordered]@{ format = [string]$doc.format; version = $version; developers = @(@($doc.developers) + @($Entries)) }
+    $path = Join-Path (Split-Path -Parent ([string]$Settings.registryPath)) "developers-v$version-para-assinar.json"
+    [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $draft -Depth 6), [Text.UTF8Encoding]::new($false))
+    return $path
+}
+
+# The signed registry, after BundleTool verifies it against the root, where the apps fetch it. The file goes as text:
+# the bytes the root signed, which the database parses itself.
+function Publish-FixRegistry {
+    param($Settings, [Security.SecureString]$Passphrase, [switch]$DryRun)
+    $path = [string]$Settings.registryPath
+    if ($DryRun) { return (Invoke-FixInboxRpc $Settings 'dev_registry_publish' @{ p_signed_text = "(o texto de $path)" } $null -DryRun) }
+    $check = Invoke-FixRegistryVerify $Settings
+    if (-not $check.valid) { throw ('O registro não confere com a chave raiz, então não foi publicado: ' + (@($check.problems) -join '; ')) }
+    return [long](Invoke-FixInboxRpc $Settings 'dev_registry_publish' @{ p_signed_text = [IO.File]::ReadAllText($path) } $Passphrase)
+}
+
+# "Chaves novas...": the keys the registry lacks → its next version with them, and the signing console.
+function Invoke-FixInboxNewKeys {
+    param($Window)
+    $settings = Get-FixInboxSettings
+    if (Test-FixDryRun $Window) {
+        Write-FixLog $Window (@('[dry run] chaves novas:') + @((Get-FixDeveloperKeys $settings $null -DryRun).Requests | ForEach-Object { "    $_" }))
+        Write-FixWindowStatus $Window 'Dry run: nada foi pedido ao Supabase.'
+        return
+    }
+    if (-not $Window.Passphrase) { throw 'Digite a frase-senha de administrador e clique Usar.' }
+    $rows = @(Get-FixDeveloperKeys $settings $Window.Passphrase)
+    $check = Invoke-FixRegistryVerify $settings
+    if (-not $check.valid) { throw ('O registro atual não confere: ' + (@($check.problems) -join '; ')) }
+    $registry = [IO.File]::ReadAllText([string]$settings.registryPath) | ConvertFrom-Json
+    $entries = @(Get-FixNewRegistryEntries $registry $rows)
+    $Window.LastNewKeys = [pscustomobject]@{ requested = $rows.Count; added = @($entries | ForEach-Object { [string]$_.id }); draft = $null }
+    if ($entries.Count -eq 0) {
+        Write-FixWindowStatus $Window "Nenhuma chave nova: as $($rows.Count) chave(s) pedidas nos apps já estão no registro v$($registry.version)."
+        return
+    }
+    $next = [long]$registry.version + 1
+    $list = ($entries | ForEach-Object { "• $($_.id) <$($_.email)>" + $(if ($_.senior) { ', sênior' } else { '' }) + ', apps: ' + $(if (@($_.apps).Count) { @($_.apps) -join ', ' } else { 'todos' }) }) -join "`n"
+    if (-not (Confirm-FixStep $Window "Pôr no registro de desenvolvedores (versão $next) as chaves que estes convidados registraram nos apps?`n`n$list`n`nDepois o console de assinatura abre (senha da raiz); assinado, clique Publicar registro." 'Chaves novas')) {
+        Write-FixWindowStatus $Window 'Nenhuma chave foi posta no registro.'
+        return
+    }
+    $draft = Write-FixRegistryDraftEntries $settings $entries
+    $Window.LastNewKeys.draft = $draft
+    Write-FixLog $Window @("registro: versão $next com $($entries.Count) chave(s) nova(s) em $draft, sem assinatura.")
+    $root = Get-FixRootIdentityPath $settings $Window.Form
+    if (-not $root) { Write-FixLog $Window @('assinatura do registro adiada: nenhuma identidade raiz escolhida (use Assinar registro... depois).') }
+    else {
+        Open-FixRegistrySignConsole (Get-FixRegistrySignCommandLine $settings $draft $root)
+        Write-FixLog $Window @('console aberto para registry-sign: digite a senha da raiz lá; depois clique Publicar registro.')
+    }
+    Write-FixWindowStatus $Window "$($entries.Count) chave(s) no rascunho da versão $next. Assine no console e clique Publicar registro."
+}
+
+# "Publicar registro": the signed registry where the apps fetch it.
+function Invoke-FixInboxPublishRegistry {
+    param($Window)
+    $settings = Get-FixInboxSettings
+    if (Test-FixDryRun $Window) {
+        Write-FixLog $Window (@('[dry run] publicar o registro:') + @((Publish-FixRegistry $settings $null -DryRun).Requests | ForEach-Object { "    $_" }))
+        Write-FixWindowStatus $Window 'Dry run: nada foi publicado.'
+        return
+    }
+    if (-not $Window.Passphrase) { throw 'Digite a frase-senha de administrador e clique Usar.' }
+    if (-not (Confirm-FixStep $Window "Publicar para os apps o registro de desenvolvedores assinado?`n`n$([string]$settings.registryPath)`n`nOs apps só o aceitam com a assinatura da raiz, e uma versão mais velha que a publicada é recusada." 'Publicar registro')) {
+        Write-FixWindowStatus $Window 'Nada foi publicado.'
+        return
+    }
+    $version = Publish-FixRegistry $settings $Window.Passphrase
+    $Window.LastPublished = $version
+    Write-FixLog $Window @("registro de desenvolvedores v$version publicado: os apps o buscam ao pedir acesso e a cada desbloqueio.")
+    Write-FixWindowStatus $Window "Registro v$version publicado."
+}
+
+# The form: name, e-mail, id (follows the name until edited), the apps, senior, and the public key when there is one.
+# Senior is kept on the developer row and written to the registry entry; only the signed registry grants it.
 function Read-FixDeveloperForm {
     param($Window)
     $layout = $UI.FixDevInvite
@@ -189,6 +312,8 @@ function Read-FixDeveloperForm {
     $x = 170
     foreach ($app in $script:FixDevApps) { $appBoxes[$app] = Add-FixControl $form 'CheckBox' $app $x $y 150 $UI.RowH; $appBoxes[$app].Enabled = $false; $x += 160 }
     [void](Add-FixControl $form 'Label' 'Apps:' 16 ($y - 30) 150 $UI.RowH)
+    $y += 40
+    $senior = Add-FixControl $form 'CheckBox' 'Sênior: pode mudar classes protegidas (security, selfcode...)' 170 $y ($layout.Width - 186) $UI.RowH
     $y += 44
     [void](Add-FixControl $form 'Label' 'Chave pública (opcional):' 16 $y 150 $UI.RowH)
     $boxes.PublicKey = Add-FixControl $form 'TextBox' '' 170 $y ($layout.Width - 186) $UI.RowH
@@ -205,7 +330,7 @@ function Read-FixDeveloperForm {
     try {
         if ($form.ShowDialog($Window.Form) -ne 'OK') { return $null }
         $apps = @($appBoxes.Keys | Where-Object { $appBoxes[$_].Checked })
-        return (Build-FixDeveloperRequest $boxes.Name.Text $boxes.Email.Text $boxes.Id.Text $all.Checked $apps $boxes.PublicKey.Text)
+        return (Build-FixDeveloperRequest $boxes.Name.Text $boxes.Email.Text $boxes.Id.Text $all.Checked $apps $boxes.PublicKey.Text $senior.Checked)
     } finally { $form.Dispose() }
 }
 

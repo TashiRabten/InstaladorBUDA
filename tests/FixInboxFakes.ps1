@@ -11,6 +11,8 @@ $FakeInbox = @{
     Rows = New-Object System.Collections.ArrayList
     Calls = New-Object System.Collections.Generic.List[object]
     Invites = New-Object System.Collections.ArrayList
+    AccessKeys = New-Object System.Collections.ArrayList   # rows of fix_inbox_developer_keys
+    Published = New-Object System.Collections.ArrayList    # dev_registry_publish: the texts, oldest first
     NextId = 1; Open = $true; MaxPerHour = 10
 }
 
@@ -156,6 +158,18 @@ function Invoke-FakeInboxRpc {
             if ($null -ne $Params.p_note) { $row.maintainer_note = $Params.p_note }
             $row.updated_at = [datetime]::UtcNow.ToString('o')
             return (Build-FakeInboxReply 204 $null '')
+        }
+        'fix_inbox_developer_keys' { return (Build-FakeInboxReply 200 @($FakeInbox.AccessKeys)) }
+        'dev_registry_publish' {
+            # As the SQL: the same file again is fine; any other version must be newer than the newest published.
+            $text = [string]$Params.p_signed_text
+            $version = [long]($text | ConvertFrom-Json).version
+            $last = if ($FakeInbox.Published.Count) { [string]$FakeInbox.Published[$FakeInbox.Published.Count - 1] } else { '' }
+            $newest = if ($last) { [long]($last | ConvertFrom-Json).version } else { 0 }
+            if ($last -and $version -eq $newest -and $text -eq $last) { return (Build-FakeInboxReply 200 $null ([string]$version)) }
+            if ($version -le $newest) { return (Build-FakeInboxReply 400 @{ code = '22023'; message = "version $version is not newer than the published $newest" }) }
+            [void]$FakeInbox.Published.Add($text)
+            return (Build-FakeInboxReply 200 $null ([string]$version))
         }
         'fix_inbox_register_developer' {
             $u = $FakeInbox.Users[[string]$Params.p_email]

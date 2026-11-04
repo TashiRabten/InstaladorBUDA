@@ -4,7 +4,7 @@
 # clicks the same buttons (FixInboxCli.ps1). Sizes are design pixels in $UI, through Px / Set-Box.
 
 $UI.FixSuggest = @{ Width = 760; Height = 600; MinWidth = 700; MinHeight = 560 }
-$UI.FixInbox = @{ Width = 900; Height = 720; MinWidth = 820; MinHeight = 640 }
+$UI.FixInbox = @{ Width = 1024; Height = 720; MinWidth = 1024; MinHeight = 640 }
 $UI.FixSettings = @{ Width = 720; Height = 510; LabelW = 190; FieldX = 210; FieldW = 494 }
 
 function Add-FixControl {
@@ -126,7 +126,7 @@ function Build-FixWindowState {
         Busy = $false; LastError = $null; LastStatus = ''; CliConfirmed = $false; CliNote = $null; CliOverrideCeiling = $false
         LastPrUrl = $null; LastOutcome = $null; LastSent = $null
         Passphrase = $null; CliMaxPerHour = $null; LastRegistered = $null
-        CliDeveloper = $null; LastInvite = $null; InviteForm = $null
+        CliDeveloper = $null; LastInvite = $null; InviteForm = $null; LastNewKeys = $null; LastPublished = $null
     })
 }
 
@@ -172,6 +172,8 @@ function Invoke-FixWindowStep {
             'inbox-open' { Invoke-FixInboxSetOpen $Window $true }
             'inbox-close' { Invoke-FixInboxSetOpen $Window $false }
             'inbox-add-developer' { Invoke-FixInboxAddDeveloper $Window }
+            'inbox-new-keys' { Invoke-FixInboxNewKeys $Window }
+            'inbox-publish-registry' { Invoke-FixInboxPublishRegistry $Window }
             'settings' { Show-FixInboxSettingsDialog $Window.TabState $Window.Form; Show-FixSessionLabel $Window }
             default { throw "Passo desconhecido: $Step" }
         }
