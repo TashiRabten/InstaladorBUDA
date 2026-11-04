@@ -85,6 +85,12 @@ function Connect-MergeButtons {
             & $State.Run $commands 'Complete merge (Gitleaks first)' $false $root
         } catch { $State.Status.Text = $_.Exception.Message }
     }.GetNewClosure())
+    $State.Buttons.Quit.Add_Click({
+        try {
+            $root = $State.App.repoRoot
+            & $State.Run (Build-GitMergeQuitCommands $root) 'Forget the merge in progress (git merge --quit): the index and every file stay as they are' $false $root
+        } catch { $State.Status.Text = $_.Exception.Message }
+    }.GetNewClosure())
 }
 
 function Show-GitMergeTool {
@@ -109,7 +115,7 @@ function Show-GitMergeTool {
     $state = @{App=$App; Run=$Run; Scanner=$Scanner; Form=$form; Files=$files; Buttons=@{}; Snapshot=$null}
     Add-MergeEditors $layout $state
     $bar = New-Object System.Windows.Forms.FlowLayoutPanel; $bar.Dock='Fill'; $bar.AutoScroll=$true
-    foreach ($entry in @(@('Refresh','Refresh conflicts'),@('Ours','Use local'),@('Theirs','Use incoming'),@('Save','Save resolution'),@('Continue','Complete merge'))) {
+    foreach ($entry in @(@('Refresh','Refresh conflicts'),@('Ours','Use local'),@('Theirs','Use incoming'),@('Save','Save resolution'),@('Continue','Complete merge'),@('Quit','Forget merge'))) {
         $button=New-Object System.Windows.Forms.Button; $button.Text=$entry[1]; $button.AutoSize=$true; $button.Height=Px $UI.BtnH
         $state.Buttons[$entry[0]]=$button; $bar.Controls.Add($button)
     }
@@ -144,12 +150,85 @@ function Add-MergeEditors {
     }
 }
 
+function Resolve-GitReferenceCliButton {
+    param($Request, $State, $Controls, [string]$Action)
+    $field = if ($Action -eq 'git-switch') { 'gitBranch' } else { 'gitRef' }
+    if (-not (Test-CliProperty $Request $field)) { throw "$Action requires $field." }
+    if ($Action -eq 'git-switch') { $State.CliGitBranch = [string]$Request.gitBranch; return $Controls.Buttons.GitSwitch }
+    $State.CliGitRef = [string]$Request.gitRef
+    if ($Action -eq 'git-fast-forward') { return $Controls.Buttons.GitFastForward }
+    return $Controls.Buttons.GitMerge
+}
+
+function Build-GitFetchCommands {
+    param([string]$Root)
+    return @("& git -C $(Quote-PS $Root) fetch origin; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }")
+}
+
+function Build-GitMergeCommands {
+    param([string]$Root, [string]$Ref, [switch]$FastForwardOnly)
+    $refName = ([string]$Ref).Trim()
+    if ($refName -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$' -or $refName -match '\.\.|//|@\{|\.lock$|/$|\.$') {
+        throw "Not a commit or reference name: '$Ref'."
+    }
+    $r = Quote-PS $Root; $q = Quote-PS $refName
+    $guard = if ($FastForwardOnly) { "# Fast-forward only: Git refuses local changes that would be overwritten." } else {
+        "`$dirty = & git -C $r status --porcelain; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }; if (`$dirty) { throw 'Commit or preserve local changes before merging.' }"
+    }
+    $mergeFlags = if ($FastForwardOnly) { '--ff-only' } else { '--no-edit --no-commit' }
+    return @(
+        "& git -C $r rev-parse -q --verify MERGE_HEAD *> `$null; if (`$LASTEXITCODE -eq 0) { throw 'A merge is in progress: finish it with Resolve conflicts first.' }; `$global:LASTEXITCODE = 0",
+        $guard,
+        "& git -C $r rev-parse --verify $(Quote-PS ($refName + '^{commit}')); if (`$LASTEXITCODE) { throw 'The selected commit or reference is unavailable. Fetch first.' }",
+        "& git -C $r merge $mergeFlags $q; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }",
+        "& git -C $r -c core.quotepath=false status --short --branch"
+    )
+}
+
 function Build-GitPullCommands {
     param([string]$Root)
     $r = Quote-PS $Root
     return @(
         "`$dirty = & git -C $r status --porcelain; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }; if (`$dirty) { throw 'Commit or stash local changes before pulling.' }",
         "& git -C $r pull --no-rebase --no-commit"
+    )
+}
+
+# Switch branch: the target first brought up to date from GitHub when that loses nothing (a fast-forward of a branch
+# that is not the current one; one with commits GitHub lacks stops everything), then git switch --merge, which takes
+# the local changes along with a three-way merge and changes nothing when an untracked file would be overwritten. A
+# merge in progress stops it before anything runs. git switch --merge exits 0 even when it leaves conflict markers,
+# so the files it could not merge are named and the step fails, for Resolve conflicts.
+# Forget a merge that will not be completed (one a pull stopped long ago, whose changes another way already brought):
+# git merge --quit drops MERGE_HEAD and keeps the index and every file as they are, so nothing is undone or lost, as
+# --abort would. Refused while a file is still in conflict.
+function Build-GitMergeQuitCommands {
+    param([string]$Root)
+    $r = Quote-PS $Root
+    return @(
+        "& git -C $r rev-parse -q --verify MERGE_HEAD | Out-Null; if (`$LASTEXITCODE) { throw 'No merge is in progress.' }",
+        "`$conflicts = @(& git -C $r -c core.quotepath=false diff --name-only --diff-filter=U); if (`$conflicts.Count) { throw ('Files still in conflict: ' + (`$conflicts -join ', ')) }",
+        "& git -C $r merge --quit; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }",
+        "& git -C $r -c core.quotepath=false status --short --branch"
+    )
+}
+
+function Build-GitSwitchCommands {
+    param([string]$Root, [string]$Branch)
+    $b = ([string]$Branch).Trim()
+    if ($b -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$' -or $b -match '\.\.|//|@\{|\.lock$|/$|\.$') {
+        throw "Not a branch name: '$Branch'."
+    }
+    $r = Quote-PS $Root; $q = Quote-PS $b
+    $refspec = Quote-PS ($b + ':' + $b)
+    return @(
+        "& git -C $r rev-parse -q --verify MERGE_HEAD *> `$null; if (`$LASTEXITCODE -eq 0) { throw 'A merge is in progress: finish it with Resolve conflicts first.' }; `$global:LASTEXITCODE = 0",
+        "& git -C $r fetch origin; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }",
+        "`$current = & git -C $r branch --show-current",
+        "if (`$current -ne $q -and (& git -C $r rev-parse -q --verify $(Quote-PS "refs/heads/$b")) -and (& git -C $r rev-parse -q --verify $(Quote-PS "refs/remotes/origin/$b"))) { & git -C $r fetch origin $refspec; if (`$LASTEXITCODE) { throw 'The local $b has commits GitHub lacks (not a fast-forward): nothing was switched.' } }",
+        "& git -C $r switch --merge $q; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }",
+        "`$conflicts = @(& git -C $r -c core.quotepath=false diff --name-only --diff-filter=U); if (`$conflicts.Count) { Write-Output ('Switched, but these files have conflicts to settle with Resolve conflicts: ' + (`$conflicts -join ', ')); exit 1 }",
+        "& git -C $r -c core.quotepath=false status --short --branch"
     )
 }
 
@@ -191,5 +270,6 @@ function Resolve-MergeCliButton {
         'merge-use-incoming' { return $merge.Buttons.Theirs }
         'merge-save' { return $merge.Buttons.Save }
         'merge-continue' { return $merge.Buttons.Continue }
+        'merge-quit' { return $merge.Buttons.Quit }
     }
 }

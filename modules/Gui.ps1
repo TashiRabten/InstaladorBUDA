@@ -386,7 +386,7 @@ function New-JobTab {
     $grpPub.Controls.AddRange(@($lblWf, $cmbWf, $btnLoadRuns, $lblRun, $cmbRun, $btnPubRun, $btnUndraft, $btnRelPage, $btnRerun, $btnRerunFailed))
     $y += $boxH + $UI.BoxGap
     # Per-tab (not $script:) — concurrent tabs must not share which runs were loaded.
-    $tabState = @{ Id = $Number; LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null; CliModels = $null; CliBundles = $null; CliConfirmed = $false }
+    $tabState = @{ Id = $Number; LoadedRuns = @(); LastCommands = @(); IsRunning = $false; Cleanup = $null; CliModels = $null; CliBundles = $null; CliConfirmed = $false; CliGitBranch = $null }
 
     # ── Repo visibility (public/private toggle, e.g. to work around Actions minutes
     # running out on a private repo — flip public just to let a workflow run, then
@@ -461,6 +461,14 @@ function New-JobTab {
     $btnGitPush.Text = 'Push'; $btnGitPush.Font = $uiFont
     $btnGitPull = New-Object System.Windows.Forms.Button
     $btnGitPull.Text = 'Pull'; $btnGitPull.Font = $uiFont
+    $btnGitFetch = New-Object System.Windows.Forms.Button
+    $btnGitFetch.Text = 'Fetch'; $btnGitFetch.Font = $uiFont
+    $btnGitMerge = New-Object System.Windows.Forms.Button
+    $btnGitMerge.Text = 'Merge ref...'; $btnGitMerge.Font = $uiFont
+    $btnGitFastForward = New-Object System.Windows.Forms.Button
+    $btnGitFastForward.Text = 'Fast-forward ref...'; $btnGitFastForward.Font = $uiFont
+    $btnGitSwitch = New-Object System.Windows.Forms.Button
+    $btnGitSwitch.Text = 'Switch branch...'; $btnGitSwitch.Font = $uiFont
     $btnMergeTool = New-Object System.Windows.Forms.Button
     $btnMergeTool.Text = 'Resolve conflicts...'; $btnMergeTool.Font = $uiFont
     $btnCodeCli = New-Object System.Windows.Forms.Button
@@ -494,15 +502,21 @@ function New-JobTab {
     $rowY += $UI.MessageH + ($UI.BoxRowPitch - $UI.BtnH)
     [void](Set-ButtonRow @($btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull) $UI.BoxPad $rowY 110)
     $rowY += $UI.BoxRowPitch
-    [void](Set-ButtonRow @($btnMergeTool, $btnCodeCli) $UI.BoxPad $rowY 110)
+    [void](Set-ButtonRow @($btnMergeTool, $btnGitSwitch, $btnCodeCli) $UI.BoxPad $rowY 110)
+    $rowY += $UI.BoxRowPitch
+    [void](Set-ButtonRow @($btnGitFetch, $btnGitMerge, $btnGitFastForward) $UI.BoxPad $rowY 110)
 
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpGit $UI.Pad $y $boxWidth $boxH
     $grpGit.Anchor = 'Top,Left,Right'
-    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnMergeTool, $btnCodeCli))
+    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitSwitch, $btnCodeCli))
     $y += $boxH + $UI.BoxGap
     $tips.SetToolTip($txtGitAdd, 'Paths separated by spaces; put a path with spaces in "double quotes"; . adds every change. Unstage takes the same paths out of the next commit.')
     $tips.SetToolTip($btnGitStatus, 'git status of the target app''s repo (read-only, no confirmation).')
+    $tips.SetToolTip($btnGitFetch, 'Fetch origin without changing the current branch or working files.')
+    $tips.SetToolTip($btnGitMerge, 'Merge a fetched reference into the current branch. Requires a clean worktree; divergent merges stay uncommitted for review.')
+    $tips.SetToolTip($btnGitFastForward, 'Fast-forward to a fetched reference. Local files stay intact; Git refuses divergence or any change that would overwrite local work.')
+    $tips.SetToolTip($btnGitSwitch, 'git switch --merge to another branch, local changes kept; the branch is first fast-forwarded from GitHub when that loses nothing. Asks first.')
     $tips.SetToolTip($btnGitUnstage, 'git restore --staged of the paths in the Add field: they leave the next commit, and the files on disk stay as they are.')
     $tips.SetToolTip($btnGitCommit, 'git commit with the message above (several lines are fine). Gitleaks scans the staged changes first; a finding stops the commit.')
     $tips.SetToolTip($btnGitPush, 'git push of the current branch to its upstream — never --force. Gitleaks scans the commits the remote does not have yet; a finding stops the push.')
@@ -711,7 +725,7 @@ function New-JobTab {
         $grpGit.Text = if ($branch) { "Git  ->  $($app.name)  [$branch]   $($app.repoRoot)" }
                        elseif (-not $gitMarker) { "Git  ->  $($app.repoRoot)  (not initialized; use bootstrap)" }
                        else { "Git  ->  $($app.repoRoot)  (branch unavailable)" }
-        foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitUnstage, $btnGitCommit, $btnGitPush, $btnGitPull, $btnMergeTool)) { $b.Enabled = [bool]$branch }
+        foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitUnstage, $btnGitCommit, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitSwitch)) { $b.Enabled = [bool]$branch }
     }.GetNewClosure()
 
     $refresh = {
@@ -1438,6 +1452,41 @@ function New-JobTab {
         $commands = Build-GitPullCommands $app.repoRoot
         & $run $commands "Pull and merge remote changes ($($app.name)); use Resolve conflicts if needed" $false $app.repoRoot $null $refreshGit
     }.GetNewClosure())
+    $btnGitFetch.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        & $run (Build-GitFetchCommands $app.repoRoot) "Fetch origin ($($app.name))" $false $app.repoRoot $null $refreshGit
+    }.GetNewClosure())
+    $btnGitMerge.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        $fastForward = [bool]$tabState.CliFastForward; $tabState.CliFastForward = $false
+        $operation = if ($fastForward) { 'Fast-forward' } else { 'Merge' }
+        $ref = [string]$tabState.CliGitRef; $tabState.CliGitRef = $null
+        if (-not $ref) {
+            Add-Type -AssemblyName Microsoft.VisualBasic
+            $details = if ($fastForward) { 'Only a fast-forward is allowed. Local work is kept; overlapping changes stop the operation.' } else { 'Requires a clean worktree. A divergent merge stays uncommitted for review.' }
+            $ref = [Microsoft.VisualBasic.Interaction]::InputBox("Commit or reference to merge. Fetch first. $details", "$operation reference", 'origin/main')
+        }
+        if (-not $ref.Trim()) { return }
+        try { $cmds = Build-GitMergeCommands $app.repoRoot $ref -FastForwardOnly:$fastForward }
+        catch { & $appendLog "Merge reference: $($_.Exception.Message)"; return }
+        & $run $cmds "$operation $ref ($($app.name))" $false $app.repoRoot $null $refreshGit
+    }.GetNewClosure())
+    $btnGitFastForward.Add_Click({ $tabState.CliFastForward = $true; $btnGitMerge.PerformClick() }.GetNewClosure())
+    $btnGitSwitch.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        $branch = [string]$tabState.CliGitBranch
+        $tabState.CliGitBranch = $null
+        if (-not $branch) {
+            Add-Type -AssemblyName Microsoft.VisualBasic
+            $branch = [Microsoft.VisualBasic.Interaction]::InputBox("Branch to switch $($app.name) to. Local changes come along (git switch --merge); the branch is first brought up to date from GitHub when that loses nothing.", 'Switch branch', 'main')
+        }
+        if (-not $branch.Trim()) { & $appendLog 'Switch branch: no branch given; nothing was run.'; return }
+        try { $cmds = Build-GitSwitchCommands $app.repoRoot $branch }
+        catch { & $appendLog "Switch branch: $($_.Exception.Message)"; return }
+        & $run $cmds "git switch --merge $($branch.Trim()) ($($app.name)), local changes kept" $false $app.repoRoot $null $refreshGit
+    }.GetNewClosure())
     $btnMergeTool.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         try { Show-GitMergeTool $app $run $resolveSecretScanner $page.FindForm() $tabState }
@@ -1490,7 +1539,7 @@ function New-JobTab {
             RetryLast = $btnRetryLocal; Rerun = $btnRerun; RerunFailed = $btnRerunFailed; PrList = $prSection.Buttons.List; PrCreate = $prSection.Buttons.Create; PrMerge = $prSection.Buttons.Merge
             LoadRuns = $btnLoadRuns; PublishRun = $btnPubRun; Undraft = $btnUndraft; ReleasePage = $btnRelPage
             MakePublic = $btnMakePublic; MakePrivate = $btnMakePrivate; Task = $btnTask
-            GitPull = $btnGitPull; MergeTool = $btnMergeTool; GitAdd = $btnGitAdd; GitUnstage = $btnGitUnstage; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
+            GitPull = $btnGitPull; GitFetch = $btnGitFetch; GitMerge = $btnGitMerge; GitFastForward = $btnGitFastForward; GitSwitch = $btnGitSwitch; MergeTool = $btnMergeTool; GitAdd = $btnGitAdd; GitUnstage = $btnGitUnstage; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
             AddApp = $btnBootstrapAddApp; CreateRepo = $btnBootstrapCreateRepo; ActionsSecrets = $btnBootstrapActionsSecrets; GitIgnore = $btnBootstrapGitIgnore; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
         }
     }

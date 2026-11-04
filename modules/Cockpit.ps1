@@ -343,7 +343,7 @@ function Invoke-CockpitRequest {
         }
     }
     $app = Get-App ([string]$c.Target.SelectedItem)
-    $confirmationActions = @('git-pull','merge-save','merge-continue','retry-last-job','rerun','rerun-failed','pr-create','pr-merge','upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','task')
+    $confirmationActions = @('git-pull','git-switch','git-fetch','git-merge','git-fast-forward','merge-save','merge-continue','merge-quit','retry-last-job','rerun','rerun-failed','pr-create','pr-merge','upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','task')
     if ($actionName -eq 'retag-deploy') {
         if (-not $Request.replaceExistingTag) { throw 'retag-deploy requires replaceExistingTag:true.' }
         if (-not $Request.confirm) { throw 'retag-deploy requires confirm:true.' }
@@ -398,8 +398,10 @@ function Invoke-CockpitRequest {
             $c.Task.SelectedIndex = $idx; $button = $c.Buttons.Task
         }
         'git-pull' { $button = $c.Buttons.GitPull }
+        'git-fetch' { $button = $c.Buttons.GitFetch }
+        { $_ -in @('git-switch','git-merge','git-fast-forward') } { $button = Resolve-GitReferenceCliButton $Request $state $c $actionName }
         'merge-tool' { $button = $c.Buttons.MergeTool }
-        { $_ -in @('merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue') } {
+        { $_ -in @('merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue','merge-quit') } {
             $button = Resolve-MergeCliButton $Request $state $c $app $actionName
         }
         'retry-last-job' { $button = $c.Buttons.RetryLast }

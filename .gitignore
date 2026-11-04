@@ -1,3 +1,9 @@
 # Built by build-exe.ps1 — regenerated, not source.
 InstaladorBUDA.exe
 *.exe
+
+# Local shortcuts, helper scripts, and temporary backups; these are not release inputs.
+*.lnk
+*.bak
+Open-BudafixPr.ps1
+instal.ps1

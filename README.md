@@ -468,9 +468,10 @@ the folder is not a git repo. Output goes to the session's log like any other jo
 | **Unstage** | `git restore --staged -- <paths>` of the paths in the Add field: they leave the next commit (their index entry goes back to the last commit's) and the files on disk stay as they are; `.` unstages everything. For a path that `.` staged by mistake, such as a backup or a shortcut. Shows `git status --short --branch` after. |
 | **Commit** + Message | `git commit -F <file>`: the message box can hold several lines, accents and quotes — it reaches git exactly as typed (it travels base64-encoded through a temp file, like the release note). Gitleaks first scans the staged changes (`gitleaks git --pre-commit --staged`, findings redacted); a finding, a scanner error, or no Gitleaks found stops before `git commit`. Shows the new commit and the status after. |
 | **Push** | `git push` of the current branch to its upstream — never `--force`. Gitleaks first scans the commits the upstream does not have yet (the whole history on a first push) and stops the push on a finding. |
+| **Switch branch...** | Asks for a branch (`main` by default; the CLI's `git-switch` takes `gitBranch`). A merge in progress stops it. When the branch is not the current one and GitHub has it, it is first fast-forwarded (`git fetch origin <b>:<b>`), which refuses, switching nothing, when the local branch has commits GitHub lacks. Then `git switch --merge` takes the local changes along with a three-way merge and changes nothing when an untracked file would be overwritten. Git exits 0 even when that merge leaves conflict markers, so the files it could not merge are named and the step fails, for **Resolve conflicts...**. |
 
 `core.quotepath=false` is passed, so file names with accents or Tibetan print as written. Add,
-Unstage, Commit and Push ask for confirmation (skipped under *Dry run*, which only prints the commands).
+Unstage, Commit, Push and Switch branch ask for confirmation (skipped under *Dry run*, which only prints the commands).
 InstaladorBUDA's own repo is in `apps.json` too (no build workflow, so its release steps are
 off) — pick it as the target to commit and push changes to this cockpit.
 
@@ -883,6 +884,7 @@ update each `repoRoot` if your checkout paths differ.
 | `tests/FixPrStatus.Tests.ps1` | A window closed during a PR, merge or decline job: the status waits and reaches the row; a row whose status was lost finds its PR on GitHub (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixPrStatus.Tests.ps1`). |
 | `tests/FixDevInvite.Tests.ps1` | Adicionar desenvolvedor... with no network: the form's rules, the request, each e-mail outcome through the real window driven by the CLI, the link kept out of CLI replies, the registry draft (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\FixDevInvite.Tests.ps1`). |
 | `tests/AddApp.Tests.ps1` | Add app tests: workflow reading, the complete entry, the wiring check, and the GUI and CLI add paths in a headless STA window (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\AddApp.Tests.ps1`). |
+| `tests/GitSwitch.Tests.ps1` | Switch branch on temporary repositories (a bare one for GitHub): the refusals, a dry run, an untracked file in the way, the switch with the local changes merged and the branch fast-forwarded, a conflict named, a branch with commits GitHub lacks refused (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\GitSwitch.Tests.ps1`). |
 | `tests/GitUnstage.Tests.ps1` | Unstage from the button and from `git-unstage` on a temporary repository: the named paths leave the index, their files stay as they are, and the other git actions still reach their buttons (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\GitUnstage.Tests.ps1`). |
 | `MDs/adicionar-app.md` | Checklist of what a fully wired app needs (Portuguese). |
 | `README.md` | This file. |
@@ -905,7 +907,8 @@ GitHub's normal checks. Suggested bundles retain their existing signature/review
 A divergent merge is left uncommitted for review. **Resolve conflicts…** opens a modeless
 editor with local, incoming, common-ancestor and editable result views. Save resolution
 checks that the file has not changed, rejects leftover markers, and stages that file.
-Complete merge requires no unresolved files and runs Gitleaks before committing.
+Complete merge requires no unresolved files and runs Gitleaks before committing. **Forget merge** runs
+`git merge --quit`: it clears the in-progress merge state and keeps the index and every file unchanged.
 The editor supports UTF-8 text up to 1 MB; binary/deleted/linked conflicts require another editor.
 
 GUI and CLI use the same handlers:
@@ -918,9 +921,28 @@ GUI and CLI use the same handlers:
 {"command":"action","action":"merge-tool","session":1}
 {"command":"action","action":"merge-save","session":1,"mergeFile":"path.txt","mergeResult":"Resolved text\n","confirm":true}
 {"command":"action","action":"merge-continue","session":1,"confirm":true}
+{"command":"action","action":"merge-quit","session":1,"confirm":true}
 ```
 
 Other routes: `retry-last-job`, `rerun`, `pr-list`, `merge-refresh`, `merge-file`,
 `merge-use-local`, and `merge-use-incoming`. The conflict window must belong to the selected target.
 New modules: `RecoveryOperations.ps1` and `MergeTool.ps1`, bundled into the standalone EXE.
+Not yet verified by the user in the app.
+
+
+**Git → Fetch** updates the origin references while leaving the current branch and working files in place.
+**Merge ref...** then merges a selected fetched reference (default `origin/main`) into the current branch.
+It refuses a dirty worktree or an existing merge. A fast-forward completes immediately; a divergent merge
+stays uncommitted for inspection and the existing Resolve conflicts / Complete merge controls.
+The CLI uses the same controls, supports `dryRun:true`, and requires confirmation for changes:
+
+```json
+{"command":"action","action":"git-fetch","target":"ScanBUDA","confirm":true}
+{"command":"action","action":"git-merge","target":"ScanBUDA","gitRef":"origin/main","confirm":true}
+{"command":"action","action":"git-fast-forward","target":"ScanBUDA","gitRef":"origin/main","confirm":true}
+```
+
+**Fast-forward ref...** permits unrelated local changes and uses `git merge --ff-only`.
+Git refuses divergence or any update that would overwrite local work. It neither stashes nor discards files.
+
 Not yet verified by the user in the app.
