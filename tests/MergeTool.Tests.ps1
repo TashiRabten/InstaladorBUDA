@@ -70,6 +70,23 @@ Assert-Equal (Read-GitConflictSide $work note.txt 1) "base`n" 'common ancestor e
 Assert-Equal (Read-GitConflictSide $work note.txt 2) "local`n" 'local side exact including final newline'
 Assert-Equal (Read-GitConflictSide $work note.txt 3) "incoming`n" 'incoming side exact including final newline'
 $snapshot=Get-MergeFile $work note.txt
+$owner=New-Object System.Windows.Forms.Form; $owner.ShowInTaskbar=$false; $owner.Location=New-Object System.Drawing.Point(-4000,-4000)
+$owner.Show();$tab=@{}
+$app=[pscustomobject]@{name='Scratch';repoRoot=$work}
+Show-GitMergeTool $app {} {} $owner $tab
+Assert-That ($tab.MergeState.Form.Visible) 'visual merge editor opens'
+Assert-That ($null -ne $tab.MergeState.Base) 'common ancestor pane exists'
+Assert-That ($tab.MergeState.Result.ReadOnly -eq $false) 'result is editable'
+$mergeSummary=Get-MergeCliStatus $tab
+Assert-Equal $mergeSummary.file 'note.txt' 'CLI status reports the selected conflict file'
+Assert-Equal $mergeSummary.conflictCount 1 'CLI status reports the number of loaded conflicts'
+Assert-That ([bool]$tab.MergeState.Snapshot) 'CLI action reloads the selected conflict snapshot'
+$cliResultPath=Join-Path $work 'cli-result.txt'
+[IO.File]::WriteAllText($cliResultPath,"resolved through CLI file`n",[Text.UTF8Encoding]::new($false))
+$cliRequest=[pscustomobject]@{mergeFile='note.txt';mergeResultFile=$cliResultPath}
+$cliButton=Resolve-MergeCliButton $cliRequest $tab $null $app 'merge-save'
+Assert-That ([object]::ReferenceEquals($cliButton,$tab.MergeState.Buttons.Save)) 'CLI save resolves to the visible Save control'
+Assert-Equal ($tab.MergeState.Result.Text.Replace("`r`n","`n")) "resolved through CLI file`n" 'CLI UTF-8 result file fills the visible result'
 try { Build-MergeResolutionCommands $work note.txt $snapshot.Text $snapshot.Hash | Out-Null; Assert-That $false 'conflict markers rejected' } catch { Assert-That $true 'conflict markers rejected' }
 try { Get-MergeFile $work '..\outside.txt' | Out-Null; Assert-That $false 'outside path rejected' } catch { Assert-That $true 'outside path rejected' }
 $commands=Build-MergeResolutionCommands $work note.txt "resolved`n" $snapshot.Hash
@@ -82,14 +99,7 @@ $commands=Build-MergeResolutionCommands $work note.txt "resolved`n" $snapshot.Ha
 Assert-Equal ([IO.File]::ReadAllText($file)) "resolved`n" 'resolution saved without newline changes'
 Assert-That (-not [bool](& git -C $work diff --name-only --diff-filter=U)) 'resolution staged and conflict cleared'
 Assert-That ((Build-GitPullCommands $work)[-1] -match 'pull --no-rebase --no-commit$') 'pull leaves a merge commit for reviewed Gitleaks path'
-# Visual editor opens modelessly and uses the current repository.
-$owner=New-Object System.Windows.Forms.Form; $owner.ShowInTaskbar=$false; $owner.Location=New-Object System.Drawing.Point(-4000,-4000)
-$owner.Show();$tab=@{}
-$app=[pscustomobject]@{name='Scratch';repoRoot=$work}
-Show-GitMergeTool $app {} {} $owner $tab
-Assert-That ($tab.MergeState.Form.Visible) 'visual merge editor opens'
-Assert-That ($null -ne $tab.MergeState.Base) 'common ancestor pane exists'
-Assert-That ($tab.MergeState.Result.ReadOnly -eq $false) 'result is editable'
+# Visual editor remains modeless and retains its pane contents after the resolution checks.
 $tab.MergeState.Ours.Text="Local change`r`nSecond line`r`n"
 $tab.MergeState.Theirs.Text="Incoming change`r`nSecond line`r`n"
 $tab.MergeState.Base.Text="Common ancestor`r`nSecond line`r`n"

@@ -40,7 +40,7 @@ function Get-CockpitStatus {
             bootstrapRoot = $c.BootstrapRoot.Text; githubRepo = $c.BootstrapRepo.Text
             bootstrapMessage = $c.BootstrapMessage.Text; gitleaksPath = $c.BootstrapScanner.Text
             visibility = $c.Visibility.Text; visibilityRepo = [string]$state.VisibilityRepo; visibilityToggle = [bool]($c.Buttons.MakePublic.Enabled -and $c.Buttons.MakePrivate.Enabled)
-            lastCommands = @($state.LastCommands); logTail = $tail
+            lastCommands = @($state.LastCommands); merge = Get-MergeCliStatus $state; logTail = $tail
         }
     }
     $selector = if (Test-CliProperty $Request 'session') { 'session' } elseif (Test-CliProperty $Request 'tab') { 'tab' } else { $null }
@@ -352,7 +352,7 @@ function Invoke-CockpitRequest {
     if ($actionName -in $confirmationActions -and -not $c.DryRun.Checked -and -not $Request.confirm) {
         throw "$actionName requires confirm:true (or set dryRun:true to preview only)."
     }
-    $gitActionButtons = @{ 'git-status' = 'GitStatus'; 'git-add' = 'GitAdd'; 'git-unstage' = 'GitUnstage'; 'git-commit' = 'GitCommit'; 'git-push' = 'GitPush' }
+    $gitActionButtons = @{ 'git-status' = 'GitStatus'; 'git-add' = 'GitAdd'; 'git-unstage' = 'GitUnstage'; 'git-commit' = 'GitCommit'; 'git-push' = 'GitPush'; 'merge-quit' = 'GitMergeQuit' }
     if ($actionName -eq 'actions-secrets') {
         $state.LastActionsSecretsResult = $null
         $button = $c.Buttons.ActionsSecrets
@@ -401,7 +401,7 @@ function Invoke-CockpitRequest {
         'git-fetch' { $button = $c.Buttons.GitFetch }
         { $_ -in @('git-switch','git-merge','git-fast-forward') } { $button = Resolve-GitReferenceCliButton $Request $state $c $actionName }
         'merge-tool' { $button = $c.Buttons.MergeTool }
-        { $_ -in @('merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue','merge-quit') } {
+        { $_ -in @('merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue') } {
             $button = Resolve-MergeCliButton $Request $state $c $app $actionName
         }
         'retry-last-job' { $button = $c.Buttons.RetryLast }

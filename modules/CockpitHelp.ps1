@@ -18,7 +18,7 @@ function Get-CockpitHelp {
                 bootstrapPlan = @{ required = @(); optional = @('session','tab','repoRoot','githubRepo','gitleaksPath','waitMs') }
                 bootstrapPrepare = @{ required = @('confirm:true'); optional = @('session','tab','repoRoot','githubRepo','gitleaksPath','waitMs') }
                 bootstrapPublish = @{ required = @('confirm:true'); optional = @('session','tab','repoRoot','githubRepo','commitMessage','gitleaksPath','waitMs') }
-                action = @{ required = @('action'); optional = @('session','tab','target','version','publish','dryRun','notes','bundles','models','runId','prBase','prHead','prTitle','prBody','prNumber','mergeFile','mergeResult','taskName','gitPaths','gitBranch','gitRef','commitMessage','githubRepo','agent','confirm','replaceExistingTag','waitMs') }
+                action = @{ required = @('action'); optional = @('session','tab','target','version','publish','dryRun','notes','bundles','models','runId','prBase','prHead','prTitle','prBody','prNumber','mergeFile','mergeResult','mergeResultFile','taskName','gitPaths','gitBranch','gitRef','commitMessage','githubRepo','agent','confirm','replaceExistingTag','waitMs') }
                 fixSettings = @{ required = @('confirm:true'); optional = @('supabaseUrl','publishableKey','suggestionsFolder','tradutorInstall','scanInstall','suiteInstall','registryPath','rootKeyPath','inboxFolder','worktreeRoot') }
                 fixSuggest = @{ required = @(); optional = @('bundle','email') }
                 fixSuggestSend = @{ required = @('confirm:true (or dryRun:true)'); optional = @() }
@@ -55,7 +55,7 @@ function Get-CockpitHelp {
             safety = @{
                 retry = 'rerun/rerun-failed require runId and confirm:true; retries the original commit and inputs and waits for a new attempt. retry-last-job repeats this session failed job; tag builds use their existing run.'
                 pullRequests = 'pr-create takes prBase/prHead/prTitle/prBody, with the head already pushed. pr-merge takes prNumber and confirm:true, pins the inspected head SHA and does not bypass checks.'
-                merge = 'git-pull requires confirm:true and a clean worktree, uses --no-rebase --no-commit. merge-tool opens the visual editor; merge-save/merge-continue/merge-quit require confirm:true. Save rejects conflict markers and files changed since loading. Continue runs Gitleaks before committing. merge-quit uses git merge --quit and leaves the index and working files in place.'
+                merge = 'git-pull requires confirm:true and a clean worktree, uses --no-rebase --no-commit. merge-tool opens the visual editor; merge-save/merge-continue require that editor and confirm:true. Save rejects conflict markers and files changed since loading. merge-save accepts mergeResultFile for a UTF-8 file up to 1 MiB when the result is too large for a CLI argument. Continue runs Gitleaks before committing. merge-quit requires confirm:true and clicks Git > Forget merge; it runs git merge --quit only when there are no unresolved files and leaves the index and working files in place.'
                 deploy = 'Rejects an existing local tag, remote tag, or GitHub release.'
                 retagDeploy = 'Moves an existing remote tag only with replaceExistingTag:true and confirm:true; uses a remote-object lease.'
                 createRepo = 'Creates an empty private GitHub repository and does not stage or push local files.'

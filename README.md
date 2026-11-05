@@ -907,8 +907,10 @@ GitHub's normal checks. Suggested bundles retain their existing signature/review
 A divergent merge is left uncommitted for review. **Resolve conflicts…** opens a modeless
 editor with local, incoming, common-ancestor and editable result views. Save resolution
 checks that the file has not changed, rejects leftover markers, and stages that file.
-Complete merge requires no unresolved files and runs Gitleaks before committing. **Forget merge** runs
-`git merge --quit`: it clears the in-progress merge state and keeps the index and every file unchanged.
+Complete merge requires no unresolved files and runs Gitleaks before committing. The Git group’s
+**Forget merge** button is available directly from the main window and the `merge-quit` CLI action;
+it runs `git merge --quit`, clearing the in-progress merge state while keeping the index and every
+file unchanged.
 The editor supports UTF-8 text up to 1 MB; binary/deleted/linked conflicts require another editor.
 
 GUI and CLI use the same handlers:
@@ -920,12 +922,14 @@ GUI and CLI use the same handlers:
 {"command":"action","action":"git-pull","session":1,"confirm":true}
 {"command":"action","action":"merge-tool","session":1}
 {"command":"action","action":"merge-save","session":1,"mergeFile":"path.txt","mergeResult":"Resolved text\n","confirm":true}
+{"command":"action","action":"merge-save","session":1,"mergeFile":"path.txt","mergeResultFile":"C:\\Temp\\resolved.txt","confirm":true}
 {"command":"action","action":"merge-continue","session":1,"confirm":true}
 {"command":"action","action":"merge-quit","session":1,"confirm":true}
 ```
 
 Other routes: `retry-last-job`, `rerun`, `pr-list`, `merge-refresh`, `merge-file`,
-`merge-use-local`, and `merge-use-incoming`. The conflict window must belong to the selected target.
+`merge-use-local`, and `merge-use-incoming`. `mergeResultFile` is UTF-8 text up to 1 MiB and avoids
+Windows command-line limits for large results. The conflict window must belong to the selected target.
 New modules: `RecoveryOperations.ps1` and `MergeTool.ps1`, bundled into the standalone EXE.
 Not yet verified by the user in the app.
 

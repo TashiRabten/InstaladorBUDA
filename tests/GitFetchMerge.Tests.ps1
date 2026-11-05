@@ -150,6 +150,8 @@ try {
     Assert-That (Wait-TabJob $tab) 'repeat merge finishes'
     Assert-That ($tab.LastExitCode -ne 0) 'existing merge is refused'
     Assert-That ((Get-CockpitHelp).data.actions -contains 'merge-quit') 'help: merge-quit is listed'
+    Assert-That ($null -ne $c.Buttons.GitMergeQuit) 'Git group has a standalone Forget merge button'
+    Assert-That ([bool]$c.Buttons.GitMergeQuit.Enabled) 'Forget merge button is available for a Git target'
     $refused=$null
     try { [void](Invoke-CockpitRequest $guiState ([pscustomobject]@{command='action';action='merge-quit';session='1'})) } catch { $refused=$_.Exception.Message }
     Assert-That ([bool]($refused -match 'confirm:true')) 'merge-quit needs confirmation'

@@ -471,6 +471,8 @@ function New-JobTab {
     $btnGitSwitch.Text = 'Switch branch...'; $btnGitSwitch.Font = $uiFont
     $btnMergeTool = New-Object System.Windows.Forms.Button
     $btnMergeTool.Text = 'Resolve conflicts...'; $btnMergeTool.Font = $uiFont
+    $btnGitMergeQuit = New-Object System.Windows.Forms.Button
+    $btnGitMergeQuit.Text = 'Forget merge'; $btnGitMergeQuit.Font = $uiFont
     $btnCodeCli = New-Object System.Windows.Forms.Button
     $btnCodeCli.Text = 'Agent chat...'; $btnCodeCli.Font = $uiFont
     $gitBtnW = [Math]::Max((Get-ButtonWidth $btnGitAdd 110), (Get-ButtonWidth $btnGitCommit 110))
@@ -502,14 +504,14 @@ function New-JobTab {
     $rowY += $UI.MessageH + ($UI.BoxRowPitch - $UI.BtnH)
     [void](Set-ButtonRow @($btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull) $UI.BoxPad $rowY 110)
     $rowY += $UI.BoxRowPitch
-    [void](Set-ButtonRow @($btnMergeTool, $btnGitSwitch, $btnCodeCli) $UI.BoxPad $rowY 110)
+    [void](Set-ButtonRow @($btnMergeTool, $btnGitMergeQuit, $btnGitSwitch, $btnCodeCli) $UI.BoxPad $rowY 110)
     $rowY += $UI.BoxRowPitch
     [void](Set-ButtonRow @($btnGitFetch, $btnGitMerge, $btnGitFastForward) $UI.BoxPad $rowY 110)
 
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpGit $UI.Pad $y $boxWidth $boxH
     $grpGit.Anchor = 'Top,Left,Right'
-    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitSwitch, $btnCodeCli))
+    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitMergeQuit, $btnGitSwitch, $btnCodeCli))
     $y += $boxH + $UI.BoxGap
     $tips.SetToolTip($txtGitAdd, 'Paths separated by spaces; put a path with spaces in "double quotes"; . adds every change. Unstage takes the same paths out of the next commit.')
     $tips.SetToolTip($btnGitStatus, 'git status of the target app''s repo (read-only, no confirmation).')
@@ -517,6 +519,7 @@ function New-JobTab {
     $tips.SetToolTip($btnGitMerge, 'Merge a fetched reference into the current branch. Requires a clean worktree; divergent merges stay uncommitted for review.')
     $tips.SetToolTip($btnGitFastForward, 'Fast-forward to a fetched reference. Local files stay intact; Git refuses divergence or any change that would overwrite local work.')
     $tips.SetToolTip($btnGitSwitch, 'git switch --merge to another branch, local changes kept; the branch is first fast-forwarded from GitHub when that loses nothing. Asks first.')
+    $tips.SetToolTip($btnGitMergeQuit, 'Clears the in-progress merge state when no files are unresolved; keeps the index and working files as they are.')
     $tips.SetToolTip($btnGitUnstage, 'git restore --staged of the paths in the Add field: they leave the next commit, and the files on disk stay as they are.')
     $tips.SetToolTip($btnGitCommit, 'git commit with the message above (several lines are fine). Gitleaks scans the staged changes first; a finding stops the commit.')
     $tips.SetToolTip($btnGitPush, 'git push of the current branch to its upstream — never --force. Gitleaks scans the commits the remote does not have yet; a finding stops the push.')
@@ -725,7 +728,7 @@ function New-JobTab {
         $grpGit.Text = if ($branch) { "Git  ->  $($app.name)  [$branch]   $($app.repoRoot)" }
                        elseif (-not $gitMarker) { "Git  ->  $($app.repoRoot)  (not initialized; use bootstrap)" }
                        else { "Git  ->  $($app.repoRoot)  (branch unavailable)" }
-        foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitUnstage, $btnGitCommit, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitSwitch)) { $b.Enabled = [bool]$branch }
+        foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitUnstage, $btnGitCommit, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitMergeQuit, $btnGitSwitch)) { $b.Enabled = [bool]$branch }
     }.GetNewClosure()
 
     $refresh = {
@@ -1456,6 +1459,13 @@ function New-JobTab {
         $app = Get-App $cmbTarget.SelectedItem
         & $run (Build-GitFetchCommands $app.repoRoot) "Fetch origin ($($app.name))" $false $app.repoRoot $null $refreshGit
     }.GetNewClosure())
+    $btnGitMergeQuit.Add_Click({
+        $app = Get-App $cmbTarget.SelectedItem
+        if (-not $app) { return }
+        try { $commands = Build-GitMergeQuitCommands $app.repoRoot }
+        catch { & $appendLog "Forget merge: $($_.Exception.Message)"; return }
+        & $run $commands "Forget the merge in progress ($($app.name)); keep the index and working files" $false $app.repoRoot $null $refreshGit
+    }.GetNewClosure())
     $btnGitMerge.Add_Click({
         $app = Get-App $cmbTarget.SelectedItem
         if (-not $app) { return }
@@ -1539,7 +1549,7 @@ function New-JobTab {
             RetryLast = $btnRetryLocal; Rerun = $btnRerun; RerunFailed = $btnRerunFailed; PrList = $prSection.Buttons.List; PrCreate = $prSection.Buttons.Create; PrMerge = $prSection.Buttons.Merge
             LoadRuns = $btnLoadRuns; PublishRun = $btnPubRun; Undraft = $btnUndraft; ReleasePage = $btnRelPage
             MakePublic = $btnMakePublic; MakePrivate = $btnMakePrivate; Task = $btnTask
-            GitPull = $btnGitPull; GitFetch = $btnGitFetch; GitMerge = $btnGitMerge; GitFastForward = $btnGitFastForward; GitSwitch = $btnGitSwitch; MergeTool = $btnMergeTool; GitAdd = $btnGitAdd; GitUnstage = $btnGitUnstage; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
+            GitPull = $btnGitPull; GitFetch = $btnGitFetch; GitMerge = $btnGitMerge; GitFastForward = $btnGitFastForward; GitMergeQuit = $btnGitMergeQuit; GitSwitch = $btnGitSwitch; MergeTool = $btnMergeTool; GitAdd = $btnGitAdd; GitUnstage = $btnGitUnstage; GitCommit = $btnGitCommit; GitStatus = $btnGitStatus; GitPush = $btnGitPush; CodeCli = $btnCodeCli
             AddApp = $btnBootstrapAddApp; CreateRepo = $btnBootstrapCreateRepo; ActionsSecrets = $btnBootstrapActionsSecrets; GitIgnore = $btnBootstrapGitIgnore; BootstrapPlan = $btnBootstrapPlan; BootstrapPrepare = $btnBootstrapPrepare; BootstrapPublish = $btnBootstrapPublish
         }
     }

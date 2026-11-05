@@ -12,7 +12,9 @@ function Get-MergeFile {
     if ($bytes.Length -gt 1MB -or $bytes -contains 0) { throw 'This editor supports UTF-8 text files up to 1 MB.' }
     $bom = $bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes).TrimStart([char]0xFEFF)
-    return @{ Path = $path; Text = $text; Bom = $bom; Hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '') } finally { $sha.Dispose() }
+    return @{ Path = $path; Text = $text; Bom = $bom; Hash = $hash }
 }
 
 function Build-MergeResolutionCommands {
@@ -258,18 +260,39 @@ function Resolve-MergeCliButton {
     $merge=$State.MergeState
     if (-not $merge -or $merge.Form.IsDisposed) { throw 'Merge tool did not open.' }
     if ($merge.App.repoRoot -ne $App.repoRoot) { throw 'Close the merge window for the other target first.' }
+    Read-MergeFiles $merge
     if ($Request.mergeFile) {
         $merge.Files.SelectedItem=[string]$Request.mergeFile
         if ($merge.Files.SelectedItem -ne $Request.mergeFile) { throw 'Conflict file not found. Refresh conflicts.' }
     }
+    if ($Action -ne 'merge-refresh') {
+        Read-MergeSelection $merge
+        if ($Action -in @('merge-file','merge-use-local','merge-use-incoming','merge-save') -and -not $merge.Snapshot) { throw [string]$merge.Status.Text }
+    }
+    if ((Test-CliProperty $Request 'mergeResult') -and (Test-CliProperty $Request 'mergeResultFile')) {
+        throw 'Use mergeResult or mergeResultFile, not both.'
+    }
     if (Test-CliProperty $Request 'mergeResult') { $merge.Result.Text=[string]$Request.mergeResult }
+    if (Test-CliProperty $Request 'mergeResultFile') {
+        $resultPath=[IO.Path]::GetFullPath([string]$Request.mergeResultFile)
+        if (-not [IO.File]::Exists($resultPath)) { throw 'mergeResultFile must name an existing UTF-8 text file.' }
+        if ((Get-Item -LiteralPath $resultPath).Length -gt 1MB) { throw 'mergeResultFile exceeds the 1 MiB limit.' }
+        try { $merge.Result.Text=[Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes($resultPath)).TrimStart([char]0xFEFF) }
+        catch [Text.DecoderFallbackException] { throw 'mergeResultFile must contain valid UTF-8.' }
+    }
     switch ($Action) {
         'merge-refresh' { return $merge.Buttons.Refresh }
-        'merge-file' { if (-not $Request.mergeFile) { throw 'merge-file requires mergeFile.' }; Read-MergeSelection $merge; return $merge.Buttons.Refresh }
+        'merge-file' { if (-not $Request.mergeFile) { throw 'merge-file requires mergeFile.' }; return $merge.Buttons.Refresh }
         'merge-use-local' { return $merge.Buttons.Ours }
         'merge-use-incoming' { return $merge.Buttons.Theirs }
         'merge-save' { return $merge.Buttons.Save }
         'merge-continue' { return $merge.Buttons.Continue }
-        'merge-quit' { return $merge.Buttons.Quit }
     }
+}
+
+function Get-MergeCliStatus {
+    param($State)
+    $merge=$State.MergeState
+    if (-not $merge -or $merge.Form.IsDisposed) { return $null }
+    return @{ file = [string]$merge.Files.SelectedItem; status = [string]$merge.Status.Text; selectedIndex = [int]$merge.Files.SelectedIndex; conflictCount = [int]$merge.Files.Items.Count; hasSnapshot = [bool]$merge.Snapshot }
 }
