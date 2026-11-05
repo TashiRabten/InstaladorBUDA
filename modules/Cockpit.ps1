@@ -199,7 +199,7 @@ function Invoke-CockpitRequest {
         if (Test-CliProperty $Request 'version') { $controls.Version.Text = [string]$Request.version }
         $requestedVersion = [string]$controls.Version.Text
         $showPlan = $page.Tag.ShowReleasePlan
-        return (& $showPlan $app $requestedVersion)
+        return (& $showPlan (Get-SessionApp $app $controls.GitRepoRoot.Text) $requestedVersion)   # the session Git folder, as Deploy reads it
     }
     if ($command -eq 'add-app') {
         foreach ($field in @('name','repoRoot','githubRepo')) {

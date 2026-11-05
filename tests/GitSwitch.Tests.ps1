@@ -95,7 +95,7 @@ try {
 
     # A window on a registry with only A.
     $registryPath = Join-Path $work 'apps.json'
-    $entry = '{ "name": "Repo", "repoRoot": "@@ROOT@@", "tagPrefix": "", "workflow": "", "releaseBranch": "", "versionFromGitTag": "", "uploadScript": null, "models": [], "dispatchInputs": [] }'
+    $entry = '{ "name": "Repo", "repoRoot": "@@ROOT@@", "tagPrefix": "repo-v", "workflow": "", "releaseBranch": "", "versionFromGitTag": "", "uploadScript": null, "models": [], "dispatchInputs": [] }'
     Write-Text $registryPath ("{`r`n  `"apps`": [`r`n    " + $entry.Replace('@@ROOT@@', $a.Replace('\', '\\')) + "`r`n  ],`r`n  `"tasks`": []`r`n}`r`n")
     $AppDir = $work; $cfgFile = $registryPath
     $script:AppRegistry = [BudaAppRegistry]::new($registryPath); $script:Config = $script:AppRegistry.Config; $script:Tasks = @()
@@ -121,6 +121,11 @@ try {
     Assert-Equal $status.data.sessions[0].repoRoot $b 'CLI status: effective repo folder is visible'
     $action = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'action'; action = 'git-status'; session = '1'; dryRun = $true })
     Assert-That ($action.ok -and ($tab.LastCommands -join '|').Contains($b)) 'CLI action: Git button uses the configured folder'
+    $plan = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'release-plan'; session = '1'; version = '9.9.9' })
+    Assert-Equal $plan.data.repoRoot $b 'CLI release-plan: reads the configured folder, as Deploy does'
+    $plan = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'release-plan'; session = '1'; target = 'Repo'; version = '9.9.9' })
+    Assert-Equal $plan.data.repoRoot $b 'CLI release-plan: naming the same target keeps the configured folder'
+    Assert-Equal $c.GitRepoRoot.Text $b 'CLI release-plan: the override is still set afterwards'
     $c.DryRun.Checked = $false
     $refused = $null
     try { [void](Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'configure'; session = '1'; gitRepoRoot = (Join-Path $work 'missing') })) } catch { $refused = $_.Exception.Message }
@@ -129,6 +134,8 @@ try {
     $null = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'configure'; session = '1'; gitRepoRoot = '' })
     Assert-Equal $c.GitRepoRoot.Text '' 'CLI configure: empty folder clears the override'
     Assert-Equal (Get-SessionApp (Get-App 'Repo') $c.GitRepoRoot.Text).repoRoot $a 'CLI configure: cleared override restores the registered folder'
+    $plan = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'release-plan'; session = '1'; version = '9.9.9' })
+    Assert-Equal $plan.data.repoRoot $a 'CLI release-plan: without an override it reads the registered folder'
 
     $refused = $null
     try { [void](Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'action'; action = 'git-switch'; session = '1'; gitBranch = 'main' })) } catch { $refused = $_.Exception.Message }
