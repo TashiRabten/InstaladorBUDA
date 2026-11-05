@@ -28,6 +28,7 @@ $src  = Join-Path $here 'InstaladorBUDA.ps1'
 $moduleFiles = [ordered]@{
     '#__APP_REGISTRY_CLASS__' = 'modules\AppRegistry.psm1'
     '#__GIT_BOOTSTRAP_MODULE__' = 'modules\GitBootstrap.ps1'
+    '#__ACTIONS_SECRETS_MODULE__' = 'modules\ActionsSecrets.ps1'
     '#__RELEASE_OPERATIONS_MODULE__' = 'modules\ReleaseOperations.ps1'
     '#__RECOVERY_OPERATIONS_MODULE__' = 'modules\RecoveryOperations.ps1'
     '#__MERGE_TOOL_MODULE__' = 'modules\MergeTool.ps1'

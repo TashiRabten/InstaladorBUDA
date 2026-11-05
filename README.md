@@ -115,7 +115,10 @@ prepared tree again and stops if files changed.
 The bootstrap group also has **Actions secrets...**. It targets the selected app's GitHub
 repository and opens a manager with the existing secret names, an add/update field, and a
 delete option. Values are masked and passed to `gh secret set` through standard input; they
-never go in a CLI request, process arguments, a temporary file, or the job log. The GUI asks
+never go in a CLI request, process arguments, a temporary file, or the job log. The value box
+is one line, so a multi-line value (the JSON of a release identity, a key file) goes in with
+**Value from file...**: the file's exact text is sent, line breaks kept and a UTF-8 BOM dropped
+(48 KB at most, text only); **Clear file** gives the box back. The GUI asks
 before adding/replacing or deleting a secret. The CLI action opens that same manager and
 requires explicit confirmation. It returns a scheduled acknowledgement before opening the
 dialog; after closing it, inspect the session log or request `status` for the result:
@@ -870,6 +873,7 @@ update each `repoRoot` if your checkout paths differ.
 | `InstaladorBUDA.ps1` | Small entrypoint: loads modules and chooses CLI, console, or GUI startup. |
 | `modules/AppRegistry.psm1` | App registry class and safe `apps.json` registration. |
 | `modules/GitBootstrap.ps1` | Empty-remote preflight, prepare, and publish logic. |
+| `modules/ActionsSecrets.ps1` | Actions secrets...: the masked manager; a value typed, or read from a file with Value from file..., goes to `gh secret set` through standard input. |
 | `modules/ReleaseOperations.ps1` | Release, Git, workflow, and follow-up commands. |
 | `modules/AppWiring.ps1` | Add app's complete entry (release fields read from the project's workflow), the per-control wiring check, the app's Actions page, and the CLI `list` reply. |
 | `modules/AppSelection.ps1` | Console menu and app/model/bundle selection. |

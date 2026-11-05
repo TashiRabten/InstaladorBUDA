@@ -53,6 +53,7 @@ $cfgFile = if ($ConfigPath) { $ConfigPath } else { Join-Path $AppDir 'apps.json'
 
 if ($script:SelfPath) {
     . (Join-Path $AppDir 'modules\GitBootstrap.ps1')
+    . (Join-Path $AppDir 'modules\ActionsSecrets.ps1')
     . (Join-Path $AppDir 'modules\ReleaseOperations.ps1')
     . (Join-Path $AppDir 'modules\RecoveryOperations.ps1')
     . (Join-Path $AppDir 'modules\MergeTool.ps1')
@@ -79,6 +80,7 @@ if ($script:SelfPath) {
     . (Join-Path $AppDir 'modules\Gui.ps1')
 } else {
     #__GIT_BOOTSTRAP_MODULE__
+    #__ACTIONS_SECRETS_MODULE__
     #__RELEASE_OPERATIONS_MODULE__
     #__RECOVERY_OPERATIONS_MODULE__
     #__MERGE_TOOL_MODULE__
