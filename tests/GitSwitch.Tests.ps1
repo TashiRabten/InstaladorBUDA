@@ -111,7 +111,24 @@ try {
     $tab = $tabs.TabPages[0].Tag; $c = $tab.Controls
     Assert-That ([bool]$c.Buttons.GitSwitch -and $c.Buttons.GitSwitch.Enabled) 'window: Switch branch... is there and on'
     Assert-That ($c.Buttons.GitSwitch.Parent -eq $c.Buttons.GitPull.Parent) 'window: it sits in the Git group'
+    Assert-That ([bool]$c.GitRepoRoot -and [bool]$c.GitRepoRootBrowse) 'window: the session folder override is available'
     Assert-That ((Get-CockpitHelp).data.actions -contains 'git-switch') 'help: git-switch is listed'
+
+    $configured = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'configure'; session = '1'; target = 'Repo'; gitRepoRoot = $b })
+    Assert-Equal $configured.data.repoRoot $b 'CLI configure: active repo folder is overridden'
+    Assert-Equal (Get-App 'Repo').repoRoot $a 'CLI configure: app registry root is unchanged'
+    $status = Get-CockpitStatus $guiState ([pscustomobject]@{ command = 'status'; session = '1' })
+    Assert-Equal $status.data.sessions[0].repoRoot $b 'CLI status: effective repo folder is visible'
+    $action = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'action'; action = 'git-status'; session = '1'; dryRun = $true })
+    Assert-That ($action.ok -and ($tab.LastCommands -join '|').Contains($b)) 'CLI action: Git button uses the configured folder'
+    $c.DryRun.Checked = $false
+    $refused = $null
+    try { [void](Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'configure'; session = '1'; gitRepoRoot = (Join-Path $work 'missing') })) } catch { $refused = $_.Exception.Message }
+    Assert-That ([bool]($refused -match 'does not exist')) 'CLI configure: missing folders are refused'
+    Assert-Equal $c.GitRepoRoot.Text $b 'CLI configure: rejected folder leaves the current override intact'
+    $null = Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'configure'; session = '1'; gitRepoRoot = '' })
+    Assert-Equal $c.GitRepoRoot.Text '' 'CLI configure: empty folder clears the override'
+    Assert-Equal (Get-SessionApp (Get-App 'Repo') $c.GitRepoRoot.Text).repoRoot $a 'CLI configure: cleared override restores the registered folder'
 
     $refused = $null
     try { [void](Invoke-CockpitRequest $guiState ([pscustomobject]@{ command = 'action'; action = 'git-switch'; session = '1'; gitBranch = 'main' })) } catch { $refused = $_.Exception.Message }

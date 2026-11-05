@@ -1,5 +1,23 @@
 ﻿# The CLI's help reply: commands, actions, parameter schemas, examples and safety notes. Keep it in
 # step with the visible controls and README.md (every capability exists in both the GUI and the CLI).
+function Get-SessionApp {
+    param($App, [string]$RepoRootOverride)
+    if (-not $App -or [string]::IsNullOrWhiteSpace($RepoRootOverride)) { return $App }
+    $copy = $App | Select-Object *
+    $copy.repoRoot = $RepoRootOverride.Trim()
+    return $copy
+}
+
+function ConvertTo-SessionRepoRoot {
+    param([string]$RepoRoot)
+    $repoRoot = $RepoRoot.Trim()
+    if (-not $repoRoot) { return '' }
+    if (-not (Test-Path -LiteralPath $repoRoot -PathType Container)) { throw "Git repository folder does not exist: $repoRoot" }
+    $repoRoot = (Resolve-Path -LiteralPath $repoRoot).Path
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot '.git'))) { throw "Git repository folder has no .git marker: $repoRoot" }
+    return $repoRoot
+}
+
 function Get-CockpitHelp {
     return [pscustomobject]@{
         ok = $true
@@ -11,14 +29,14 @@ function Get-CockpitHelp {
                 newSession = @{ required = @(); optional = @() }
                 selectSession = @{ required = @('session'); optional = @('tab') }
                 closeSession = @{ required = @('confirm:true'); optional = @('session','tab') }
-                configure = @{ required = @(); optional = @('session','tab','target','version','publish','dryRun','notes','workflow','gitPaths','commitMessage','taskName','bootstrapRoot','githubRepo','bootstrapMessage','gitleaksPath','prBase','prHead','prTitle','prBody','prNumber') }
+                configure = @{ required = @(); optional = @('session','tab','target','gitRepoRoot','version','publish','dryRun','notes','workflow','gitPaths','commitMessage','taskName','bootstrapRoot','githubRepo','bootstrapMessage','gitleaksPath','prBase','prHead','prTitle','prBody','prNumber') }
                 releasePlan = @{ required = @(); optional = @('session','tab','target','version') }
                 addApp = @{ required = @('name','repoRoot','githubRepo'); optional = @('session','tab') }
                 gitignore = @{ required = @(); optional = @('session','tab','target','repoRoot') }
                 bootstrapPlan = @{ required = @(); optional = @('session','tab','repoRoot','githubRepo','gitleaksPath','waitMs') }
                 bootstrapPrepare = @{ required = @('confirm:true'); optional = @('session','tab','repoRoot','githubRepo','gitleaksPath','waitMs') }
                 bootstrapPublish = @{ required = @('confirm:true'); optional = @('session','tab','repoRoot','githubRepo','commitMessage','gitleaksPath','waitMs') }
-                action = @{ required = @('action'); optional = @('session','tab','target','version','publish','dryRun','notes','bundles','models','runId','prBase','prHead','prTitle','prBody','prNumber','mergeFile','mergeResult','mergeResultFile','taskName','gitPaths','gitBranch','gitRef','commitMessage','githubRepo','agent','confirm','replaceExistingTag','waitMs') }
+                action = @{ required = @('action'); optional = @('session','tab','target','gitRepoRoot','version','publish','dryRun','notes','bundles','models','runId','prBase','prHead','prTitle','prBody','prNumber','mergeFile','mergeResult','mergeResultFile','taskName','gitPaths','gitBranch','gitRef','commitMessage','githubRepo','agent','confirm','replaceExistingTag','waitMs') }
                 fixSettings = @{ required = @('confirm:true'); optional = @('supabaseUrl','publishableKey','suggestionsFolder','tradutorInstall','scanInstall','suiteInstall','registryPath','rootKeyPath','inboxFolder','worktreeRoot') }
                 fixSuggest = @{ required = @(); optional = @('bundle','email') }
                 fixSuggestSend = @{ required = @('confirm:true (or dryRun:true)'); optional = @() }
@@ -56,6 +74,7 @@ function Get-CockpitHelp {
                 retry = 'rerun/rerun-failed require runId and confirm:true; retries the original commit and inputs and waits for a new attempt. retry-last-job repeats this session failed job; tag builds use their existing run.'
                 pullRequests = 'pr-create takes prBase/prHead/prTitle/prBody, with the head already pushed. pr-merge takes prNumber and confirm:true, pins the inspected head SHA and does not bypass checks.'
                 merge = 'git-pull requires confirm:true and a clean worktree, uses --no-rebase --no-commit. merge-tool opens the visual editor; merge-save/merge-continue require that editor and confirm:true. Save rejects conflict markers and files changed since loading. merge-save accepts mergeResultFile for a UTF-8 file up to 1 MiB when the result is too large for a CLI argument. Continue runs Gitleaks before committing. merge-quit requires confirm:true and clicks Git > Forget merge; it runs git merge --quit only when there are no unresolved files and leaves the index and working files in place.'
+                gitRepoRoot = 'configure gitRepoRoot to use an existing .git working folder for this session and target. It applies to cockpit actions and is cleared when the target changes. Pass an empty string to restore the target folder.'
                 deploy = 'Rejects an existing local tag, remote tag, or GitHub release.'
                 retagDeploy = 'Moves an existing remote tag only with replaceExistingTag:true and confirm:true; uses a remote-object lease.'
                 createRepo = 'Creates an empty private GitHub repository and does not stage or push local files.'

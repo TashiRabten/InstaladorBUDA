@@ -39,7 +39,7 @@ function Get-CockpitStatus {
             workflow = $c.Workflow.Text; task = "$($c.Task.SelectedItem)"
             bootstrapRoot = $c.BootstrapRoot.Text; githubRepo = $c.BootstrapRepo.Text
             bootstrapMessage = $c.BootstrapMessage.Text; gitleaksPath = $c.BootstrapScanner.Text
-            visibility = $c.Visibility.Text; visibilityRepo = [string]$state.VisibilityRepo; visibilityToggle = [bool]($c.Buttons.MakePublic.Enabled -and $c.Buttons.MakePrivate.Enabled)
+            visibility = $c.Visibility.Text; visibilityRepo = [string]$state.VisibilityRepo; visibilityToggle = [bool]($c.Buttons.MakePublic.Enabled -and $c.Buttons.MakePrivate.Enabled); gitRepoRoot = $c.GitRepoRoot.Text; repoRoot = (Get-SessionApp (Get-App ([string]$c.Target.SelectedItem)) $c.GitRepoRoot.Text).repoRoot
             lastCommands = @($state.LastCommands); merge = Get-MergeCliStatus $state; logTail = $tail
         }
     }
@@ -156,14 +156,14 @@ function Invoke-CockpitCliConfiguration {
             $control.Text = $value
         }
     }
-    if (Test-CliProperty $Request 'publish') { $Controls.Publish.Checked = [bool]$Request.publish }
+    if (Test-CliProperty $Request 'gitRepoRoot') { $Controls.GitRepoRoot.Text = ConvertTo-SessionRepoRoot ([string]$Request.gitRepoRoot) }; if (Test-CliProperty $Request 'publish') { $Controls.Publish.Checked = [bool]$Request.publish }
     if (Test-CliProperty $Request 'dryRun') { $Controls.DryRun.Checked = [bool]$Request.dryRun }
     Select-CockpitCliTask $Request $Controls
     & $State.AppendLog ("CLI configured target=$($Controls.Target.SelectedItem), version=$($Controls.Version.Text).")
 
     if ($Command -ne 'configure') { return $null }
     return [pscustomobject]@{ ok = $true; command = $Command; data = @{
-        tabId = $State.Id; target = "$($Controls.Target.SelectedItem)"; version = $Controls.Version.Text
+        tabId = $State.Id; target = "$($Controls.Target.SelectedItem)"; version = $Controls.Version.Text; gitRepoRoot = $Controls.GitRepoRoot.Text; repoRoot = (Get-SessionApp (Get-App ([string]$Controls.Target.SelectedItem)) $Controls.GitRepoRoot.Text).repoRoot
         bootstrapRoot = $Controls.BootstrapRoot.Text; githubRepo = $Controls.BootstrapRepo.Text
         bootstrapMessage = $Controls.BootstrapMessage.Text; gitleaksPath = $Controls.BootstrapScanner.Text
     } }
@@ -342,7 +342,7 @@ function Invoke-CockpitRequest {
             throw "Updating will stop running jobs ($names). Pass stopRunning:true to confirm."
         }
     }
-    $app = Get-App ([string]$c.Target.SelectedItem)
+    $app = Get-SessionApp (Get-App ([string]$c.Target.SelectedItem)) $c.GitRepoRoot.Text
     $confirmationActions = @('git-pull','git-switch','git-fetch','git-merge','git-fast-forward','merge-save','merge-continue','merge-quit','retry-last-job','rerun','rerun-failed','pr-create','pr-merge','upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','task')
     if ($actionName -eq 'retag-deploy') {
         if (-not $Request.replaceExistingTag) { throw 'retag-deploy requires replaceExistingTag:true.' }

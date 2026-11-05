@@ -480,6 +480,18 @@ function New-JobTab {
     $gitInputW = $gitBtnX - $UI.BtnGap - $inputX
 
     $rowY = $UI.BoxTop
+    $lblGitRoot = New-Object System.Windows.Forms.Label
+    $lblGitRoot.Text = 'Folder:'; $lblGitRoot.TextAlign = 'MiddleLeft'
+    Set-Box $lblGitRoot $UI.BoxPad ($rowY + $inset) $UI.BoxLabelW $UI.RowH
+    $txtGitRoot = New-Object System.Windows.Forms.TextBox
+    Set-Field $txtGitRoot $uiFont $inputX ($rowY + $inset) $gitInputW
+    $txtGitRoot.Anchor = 'Top,Left,Right'
+    $btnGitRootBrowse = New-Object System.Windows.Forms.Button
+    $btnGitRootBrowse.Text = 'Browse...'; $btnGitRootBrowse.Font = $uiFont
+    Set-Box $btnGitRootBrowse $gitBtnX $rowY $gitBtnW $UI.BtnH
+    $btnGitRootBrowse.Anchor = 'Top,Right'
+
+    $rowY += $UI.BoxRowPitch
     $lblGitAdd = New-Object System.Windows.Forms.Label
     $lblGitAdd.Text = 'Add:'; $lblGitAdd.TextAlign = 'MiddleLeft'
     Set-Box $lblGitAdd $UI.BoxPad ($rowY + $inset) $UI.BoxLabelW $UI.RowH
@@ -511,9 +523,11 @@ function New-JobTab {
     $boxH = $rowY + $UI.BtnH + $UI.BoxPad
     Set-Box $grpGit $UI.Pad $y $boxWidth $boxH
     $grpGit.Anchor = 'Top,Left,Right'
-    $grpGit.Controls.AddRange(@($lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitMergeQuit, $btnGitSwitch, $btnCodeCli))
+    $grpGit.Controls.AddRange(@($lblGitRoot, $txtGitRoot, $btnGitRootBrowse, $lblGitAdd, $txtGitAdd, $btnGitAdd, $lblGitMsg, $txtGitMsg, $btnGitCommit, $btnGitStatus, $btnGitUnstage, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitMergeQuit, $btnGitSwitch, $btnCodeCli))
     $y += $boxH + $UI.BoxGap
     $tips.SetToolTip($txtGitAdd, 'Paths separated by spaces; put a path with spaces in "double quotes"; . adds every change. Unstage takes the same paths out of the next commit.')
+    $tips.SetToolTip($txtGitRoot, 'Optional repository folder for this session and target. Blank uses the target setting; changing targets clears this override.')
+    $tips.SetToolTip($btnGitRootBrowse, 'Choose an existing Git working folder for this session. Clear Folder to use the target default again.')
     $tips.SetToolTip($btnGitStatus, 'git status of the target app''s repo (read-only, no confirmation).')
     $tips.SetToolTip($btnGitFetch, 'Fetch origin without changing the current branch or working files.')
     $tips.SetToolTip($btnGitMerge, 'Merge a fetched reference into the current branch. Requires a clean worktree; divergent merges stay uncommitted for review.')
@@ -627,7 +641,7 @@ function New-JobTab {
     $tips.SetToolTip($btnBootstrapGitIgnore, 'Review and edit the .gitignore in the selected project folder. Existing comments and entries are preserved unless you change them.')
     $tips.SetToolTip($btnBootstrapBrowse, 'Choose an existing local project folder. Its folder name is suggested as the app name when that field is blank.')
 
-    $initialBootstrapApp = Get-App $cmbTarget.SelectedItem
+    $initialBootstrapApp = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
     if ($initialBootstrapApp) {
         $txtBootstrapRoot.Text = [string]$initialBootstrapApp.repoRoot
         try { $txtBootstrapRepo.Text = [string](Resolve-AppRepo $initialBootstrapApp) } catch { $txtBootstrapRepo.Text = '' }
@@ -721,7 +735,7 @@ function New-JobTab {
     # The Git group follows the selected app's repo: its name, branch and folder in the title; the buttons off
     # when the folder is not a git repo. Also re-read after a commit or push (the job's $onDone).
     $refreshGit = {
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app -or -not $grpGit) { return }
         $branch = Get-GitBranch $app
         $gitMarker = if (Test-Path -LiteralPath ([string]$app.repoRoot) -PathType Container) { Test-Path -LiteralPath (Join-Path ([string]$app.repoRoot) '.git') } else { $false }
@@ -730,9 +744,19 @@ function New-JobTab {
                        else { "Git  ->  $($app.repoRoot)  (branch unavailable)" }
         foreach ($b in @($btnGitStatus, $btnGitAdd, $btnGitUnstage, $btnGitCommit, $btnGitPush, $btnGitPull, $btnGitFetch, $btnGitMerge, $btnGitFastForward, $btnMergeTool, $btnGitMergeQuit, $btnGitSwitch)) { $b.Enabled = [bool]$branch }
     }.GetNewClosure()
+    $txtGitRoot.Add_TextChanged({ & $refreshGit }.GetNewClosure())
+    $btnGitRootBrowse.Add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        try {
+            $dialog.Description = 'Choose a Git working folder for this session and selected target.'
+            if ($txtGitRoot.Text -and (Test-Path -LiteralPath $txtGitRoot.Text -PathType Container)) { $dialog.SelectedPath = $txtGitRoot.Text }
+            if ($dialog.ShowDialog($page.FindForm()) -eq [System.Windows.Forms.DialogResult]::OK) { $txtGitRoot.Text = $dialog.SelectedPath }
+        } catch { & $appendLog "Git folder: $($_.Exception.Message)" }
+        finally { $dialog.Dispose() }
+    }.GetNewClosure())
 
     $refresh = {
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         # An app with no build workflow (InstaladorBUDA itself) is here for its Git group: no release steps.
         $hasWorkflow = -not [string]::IsNullOrWhiteSpace($app.workflow)
@@ -1038,7 +1062,7 @@ function New-JobTab {
     }.GetNewClosure()
     $manageActionsSecrets = {
         $tabState.LastActionsSecretsResult = 'cancelled'
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { & $appendLog 'Select an app before managing its Actions secrets.'; $tabState.LastActionsSecretsResult = 'failed'; return }
         if ($tabState.IsRunning) { & $appendLog 'This tab already has a running job; choose an idle tab before managing Actions secrets.'; $tabState.LastActionsSecretsResult = 'failed'; return }
         if (-not $HasGh) { & $appendLog 'Managing Actions secrets requires the GitHub CLI (gh).'; $tabState.LastActionsSecretsResult = 'failed'; return }
@@ -1073,7 +1097,7 @@ function New-JobTab {
         if ($tabState.IsRunning) { & $appendLog 'Wait until this tab Git job finishes before editing .gitignore.'; return }
         $rawRoot = $txtBootstrapRoot.Text.Trim()
         if ([string]::IsNullOrWhiteSpace($rawRoot)) {
-            $selectedApp = Get-App $cmbTarget.SelectedItem
+            $selectedApp = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
             if ($selectedApp) { $rawRoot = [string]$selectedApp.repoRoot }
         }
         if ([string]::IsNullOrWhiteSpace($rawRoot)) { & $appendLog 'Choose a project folder before managing .gitignore.'; return }
@@ -1101,7 +1125,7 @@ function New-JobTab {
     # Queries gh for the selected app's current repo visibility and updates the label.
     # Separate from $refresh (which must stay fast) since this shells out to gh.
     $refreshVisibility = {
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app -or -not $lblVis) { return }
         $repoSlug = Resolve-AppRepo $app
         $tabState.VisibilityRepo = [string]$repoSlug
@@ -1113,9 +1137,9 @@ function New-JobTab {
         $lblVis.ForeColor = if ($vis -eq 'public') { [System.Drawing.Color]::Firebrick } else { [System.Drawing.Color]::ForestGreen }
     }.GetNewClosure()
 
-    $cmbTarget.Add_SelectedIndexChanged({ & $refresh; & $refreshVisibility }.GetNewClosure())
+    $cmbTarget.Add_SelectedIndexChanged({ $txtGitRoot.Clear(); & $refresh; & $refreshVisibility }.GetNewClosure())
     $btnUpload.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if ($app.uploadModels -and @($app.uploadModels).Count -gt 0) {
             if ($null -ne $tabState.CliModels) { $sel = @($tabState.CliModels) }
             else { $sel = Show-ModelPicker $app }
@@ -1129,7 +1153,7 @@ function New-JobTab {
     }.GetNewClosure())
     $startTag = {
         param([bool]$replaceTag)
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         $isImageOnly = $app.outputKind -eq 'container-image'
         $v = $txtVer.Text.Trim()
         if (-not $v) { & $appendLog "Enter a version first."; return }
@@ -1165,7 +1189,7 @@ function New-JobTab {
     $btnDeploy.Add_Click({ & $startTag $false }.GetNewClosure())
     $btnRetagDeploy.Add_Click({ & $startTag $true }.GetNewClosure())
     $btnReleasePlan.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         try { $showPlan = $tabState.ShowReleasePlan; & $showPlan $app $txtVer.Text.Trim() | Out-Null }
         catch { & $appendLog "Release plan failed: $($_.Exception.Message)" }
@@ -1222,7 +1246,7 @@ function New-JobTab {
         }
     }.GetNewClosure())
     $btnDispatch.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         $isImageOnly = $app.outputKind -eq 'container-image'
         $v = $txtVer.Text.Trim()
         if (-not $v) { & $appendLog "Enter a version first."; return }
@@ -1254,14 +1278,14 @@ function New-JobTab {
         } else { & $appendLog "No command yet — click a step first." }
     }.GetNewClosure())
     $btnActions.Add_Click({
-        $actionsPage = Get-AppActionsUrl (Get-App $cmbTarget.SelectedItem)
+        $actionsPage = Get-AppActionsUrl (Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text)
         Start-Process $actionsPage | Out-Null
         & $appendLog "Opened Actions page: $actionsPage"
     }.GetNewClosure())
 
     # ── Repo visibility handlers ─────────────────────────────────────────────
     $btnMakePublic.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         if ($null -ne $app.manageVisibility -and -not [bool]$app.manageVisibility) { & $appendLog "Visibility changes are disabled for $($app.name)."; return }
         $repoSlug = Resolve-AppRepo $app
@@ -1277,7 +1301,7 @@ function New-JobTab {
         & $run (Build-VisibilityCommands $repoSlug 'public') "Make $($app.name) repo public" $true $app.repoRoot $null $refreshVisibility
     }.GetNewClosure())
     $btnMakePrivate.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         if ($null -ne $app.manageVisibility -and -not [bool]$app.manageVisibility) { & $appendLog "Visibility changes are disabled for $($app.name)."; return }
         $repoSlug = Resolve-AppRepo $app
@@ -1289,7 +1313,7 @@ function New-JobTab {
     # Populate the workflow picker lazily from the repo when its dropdown opens.
     $cmbWf.Add_DropDown({
         if ($cmbWf.Items.Count -le 1 -and $HasGh) {
-            $app = Get-App $cmbTarget.SelectedItem
+            $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
             if ($app) {
                 $cur = $cmbWf.Text
                 $wfs = Get-RepoWorkflows (Resolve-AppRepo $app)
@@ -1302,7 +1326,7 @@ function New-JobTab {
     Connect-PullRequestSection $prSection $cmbTarget $run $appendLog
     $retryRun = {
         param([bool]$failedOnly)
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         try {
             if ($cmbRun.SelectedIndex -lt 0) { throw 'Load runs and select the failed run first.' }
             $selected = $tabState.LoadedRuns[$cmbRun.SelectedIndex]
@@ -1313,13 +1337,13 @@ function New-JobTab {
     $btnRetryLocal.Add_Click({
         if ($tabState.IsRunning) { & $appendLog 'Wait for the active job to finish.'; return }
         $last = $tabState.LastJob
-        $selectedApp = Get-App $cmbTarget.SelectedItem
+        $selectedApp = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if ($last -and $last.Root -ne $selectedApp.repoRoot) { & $appendLog "Select the original target at $($last.Root) before retrying its job."; return }
         if (-not $last -or $null -eq $tabState.LastExitCode -or $tabState.LastExitCode -eq 0) { & $appendLog 'No failed job to retry in this session.'; return }
         if (($last.Commands -join "`n") -match '(?m)^git .+ tag ') {
             Assert-CockpitButtonReady $btnLoadRuns 'Load runs is unavailable.'
             $btnLoadRuns.PerformClick()
-            $app = Get-App $cmbTarget.SelectedItem; $tag = "$($app.tagPrefix)$($txtVer.Text.Trim())"
+            $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text; $tag = "$($app.tagPrefix)$($txtVer.Text.Trim())"
             for ($i = 0; $i -lt $tabState.LoadedRuns.Count; $i++) {
                 if ($tabState.LoadedRuns[$i].headBranch -eq $tag) { $cmbRun.SelectedIndex = $i; & $retryRun $false; return }
             }
@@ -1331,7 +1355,7 @@ function New-JobTab {
     $btnRerun.Add_Click({ & $retryRun $false }.GetNewClosure())
     $btnRerunFailed.Add_Click({ & $retryRun $true }.GetNewClosure())
     $btnLoadRuns.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         if (-not $HasGh) { & $appendLog 'gh not found - cannot list runs.'; return }
         $repo = Resolve-AppRepo $app
@@ -1350,7 +1374,7 @@ function New-JobTab {
         & $appendLog "Loaded $($cmbRun.Items.Count) run(s); newest preselected. Retry uses the original commit and inputs."
     }.GetNewClosure())
     $btnPubRun.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $v = $txtVer.Text.Trim()
         if (-not $v) { & $appendLog 'Enter the version to publish AS (the release tag) first.'; return }
@@ -1365,14 +1389,14 @@ function New-JobTab {
         & $run $cmds "Publish $($app.name) v$v from run $($r.databaseId) (no rebuild)" $true $app.repoRoot (Build-FollowUpLines $app 'release' $v $true)
     }.GetNewClosure())
     $btnUndraft.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $v = $txtVer.Text.Trim()
         if (-not $v) { & $appendLog 'Enter the version (release tag) to un-draft first.'; return }
         & $run (Build-UndraftCommands $app $v) "Un-draft $($app.name) v$v" $true $app.repoRoot (Build-FollowUpLines $app 'release' $v $true)
     }.GetNewClosure())
     $btnRelPage.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $v = $txtVer.Text.Trim(); if (-not $v) { $v = (Get-CurrentVersion $app) }
         $relRepo = Resolve-ReleaseRepo $app
@@ -1398,14 +1422,14 @@ function New-JobTab {
 
     # ── Git handlers ─────────────────────────────────────────────────────────────
     $btnGitStatus.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         & $run (Build-GitStatusCommands $app) "git status ($($app.name))" $false $app.repoRoot $null $refreshGit $true
     }.GetNewClosure())
     # Add and Unstage read the same path field and show the short status after; only the git verb differs.
     $runGitPaths = {
         param([string]$Verb, [string]$EmptyHint)
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $cmds = Build-GitPathCommands $app $txtGitAdd.Text $Verb
         if (@($cmds).Count -eq 0) { & $appendLog $EmptyHint; return }
@@ -1430,7 +1454,7 @@ function New-JobTab {
         return $scanner
     }.GetNewClosure()
     $btnGitCommit.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $commitLines = @(Build-GitCommitCommands $app $txtGitMsg.Text)
         if ($commitLines.Count -eq 0) { & $appendLog 'Type the commit message first.'; return }
@@ -1442,7 +1466,7 @@ function New-JobTab {
         & $run $cmds "git commit ($($app.name)): $first" $false $app.repoRoot (Build-GitAfterLines $app 'commit') $refreshGit
     }.GetNewClosure())
     $btnGitPush.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $scanner = & $resolveSecretScanner 'nothing was pushed'
         if (-not $scanner) { return }
@@ -1451,23 +1475,23 @@ function New-JobTab {
         & $run $cmds "git push ($($app.name), $branch)" $false $app.repoRoot (Build-GitAfterLines $app 'push') $refreshGit
     }.GetNewClosure())
     $btnGitPull.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         $commands = Build-GitPullCommands $app.repoRoot
         & $run $commands "Pull and merge remote changes ($($app.name)); use Resolve conflicts if needed" $false $app.repoRoot $null $refreshGit
     }.GetNewClosure())
     $btnGitFetch.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         & $run (Build-GitFetchCommands $app.repoRoot) "Fetch origin ($($app.name))" $false $app.repoRoot $null $refreshGit
     }.GetNewClosure())
     $btnGitMergeQuit.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         try { $commands = Build-GitMergeQuitCommands $app.repoRoot }
         catch { & $appendLog "Forget merge: $($_.Exception.Message)"; return }
         & $run $commands "Forget the merge in progress ($($app.name)); keep the index and working files" $false $app.repoRoot $null $refreshGit
     }.GetNewClosure())
     $btnGitMerge.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $fastForward = [bool]$tabState.CliFastForward; $tabState.CliFastForward = $false
         $operation = if ($fastForward) { 'Fast-forward' } else { 'Merge' }
@@ -1484,7 +1508,7 @@ function New-JobTab {
     }.GetNewClosure())
     $btnGitFastForward.Add_Click({ $tabState.CliFastForward = $true; $btnGitMerge.PerformClick() }.GetNewClosure())
     $btnGitSwitch.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { return }
         $branch = [string]$tabState.CliGitBranch
         $tabState.CliGitBranch = $null
@@ -1498,7 +1522,7 @@ function New-JobTab {
         & $run $cmds "git switch --merge $($branch.Trim()) ($($app.name)), local changes kept" $false $app.repoRoot $null $refreshGit
     }.GetNewClosure())
     $btnMergeTool.Add_Click({
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         try { Show-GitMergeTool $app $run $resolveSecretScanner $page.FindForm() $tabState }
         catch { & $appendLog "Merge tool: $($_.Exception.Message)" }
     }.GetNewClosure())
@@ -1507,7 +1531,7 @@ function New-JobTab {
         # that cannot open the chat does not leave it waiting for the next one.
         $terminalRequest = $tabState.PendingAgentTerminal
         $tabState.PendingAgentTerminal = $null
-        $app = Get-App $cmbTarget.SelectedItem
+        $app = Get-SessionApp (Get-App $cmbTarget.SelectedItem) $txtGitRoot.Text
         if (-not $app) { & $appendLog 'Select an app before opening agent chat.'; return }
         # The chat is modeless: one per session tab. A second click brings it back to the front.
         $openChat = $tabState.AgentChat
@@ -1538,7 +1562,7 @@ function New-JobTab {
 
     $tabState.AppendLog = $appendLog
     $tabState.Controls = @{
-        Target = $cmbTarget; Version = $txtVer; Publish = $chkPublish; DryRun = $chkDry; Notes = $txtNotes
+        Target = $cmbTarget; Version = $txtVer; Publish = $chkPublish; DryRun = $chkDry; Notes = $txtNotes; GitRepoRoot = $txtGitRoot; GitRepoRootBrowse = $btnGitRootBrowse
         PrBase = $prSection.Controls.Base; PrHead = $prSection.Controls.Head; PrTitle = $prSection.Controls.Title; PrBody = $prSection.Controls.Body; PrNumber = $prSection.Controls.Number
         Workflow = $cmbWf; Run = $cmbRun; Task = $cmbTask; GitAdd = $txtGitAdd; GitMessage = $txtGitMsg
         BootstrapName = $txtBootstrapName; BootstrapRoot = $txtBootstrapRoot; BootstrapRepo = $txtBootstrapRepo; BootstrapMessage = $txtBootstrapMessage; BootstrapScanner = $txtBootstrapScanner

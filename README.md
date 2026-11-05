@@ -240,6 +240,20 @@ For example, stage, commit, and push selected files through the same Git panel c
 & .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-push","confirm":true,"waitMs":30000}'
 ```
 
+To run cockpit Git and release actions from another existing worktree for the selected target, set
+`gitRepoRoot` in `configure`. The folder must contain a `.git` marker (a directory or worktree file).
+This value is limited to the current session and target; changing targets clears it. An empty string
+restores the target's configured folder. `status` reports both the override and effective folder:
+
+```powershell
+& .\InstaladorBUDA.exe -Cli '{"command":"configure","session":1,"target":"ScanBUDA","gitRepoRoot":"C:\\Users\\me\\APPS\\ScanerBUDA-main-check"}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-fetch","target":"ScanBUDA","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"action","session":1,"action":"git-fast-forward","target":"ScanBUDA","gitRef":"origin/main","confirm":true,"waitMs":30000}'
+& .\InstaladorBUDA.exe -Cli '{"command":"status","session":1}'
+```
+
+The same folder can be selected in the Git panel's **Folder** field or with **Browse...**.
+
 A path staged by mistake leaves the next commit with `git-unstage`, which reads the same `gitPaths`
 field (the file on disk is not touched):
 
