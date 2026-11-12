@@ -343,7 +343,7 @@ function Invoke-CockpitRequest {
         }
     }
     $app = Get-SessionApp (Get-App ([string]$c.Target.SelectedItem)) $c.GitRepoRoot.Text
-    $confirmationActions = @('git-pull','git-switch','git-fetch','git-merge','git-fast-forward','merge-save','merge-continue','merge-quit','retry-last-job','rerun','rerun-failed','pr-create','pr-merge','upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','task')
+    $confirmationActions = @('git-pull','git-switch','git-fetch','git-merge','git-fast-forward','merge-save','merge-continue','merge-quit','retry-last-job','rerun','rerun-failed','pr-create','pr-merge','pr-close','upload','deploy','retag-deploy','dispatch','publish-run','undraft','make-public','make-private','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','task')
     if ($actionName -eq 'retag-deploy') {
         if (-not $Request.replaceExistingTag) { throw 'retag-deploy requires replaceExistingTag:true.' }
         if (-not $Request.confirm) { throw 'retag-deploy requires confirm:true.' }
@@ -408,6 +408,7 @@ function Invoke-CockpitRequest {
         'pr-list' { $button = $c.Buttons.PrList }
         'pr-create' { $button = $c.Buttons.PrCreate }
         'pr-merge' { $button = $c.Buttons.PrMerge }
+        'pr-close' { $button = Get-PullRequestButton $c 'PrClose' }
         { $gitActionButtons.ContainsKey($_) } { $button = $c.Buttons[$gitActionButtons[$_]] }
         'create-repo' {
             Invoke-CockpitCliRepository $Request $c

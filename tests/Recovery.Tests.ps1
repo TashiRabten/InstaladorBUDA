@@ -43,11 +43,11 @@ function Assert-Equal {
 
 
 $calls = New-Object System.Collections.Generic.List[string]
-$ghState = @{ Api = 0; Active = $false; Body = ''; Sha = ('a'*40) }
+$ghState = @{ Api = 0; Active = $false; Body = ''; Sha = ('a'*40); PrState = 'OPEN' }
 function gh {
     $line = $args -join ' '; $calls.Add($line); $global:LASTEXITCODE = 0
     if ($line -like 'api *') { $ghState.Api++; $attempt = if ($ghState.Api -eq 1) { 1 } else { 2 }; $status = if ($ghState.Active) { 'in_progress' } else { 'completed' }; return (@{run_attempt=$attempt;status=$status}|ConvertTo-Json) }
-    if ($line -like 'pr view *') { return (@{state='OPEN';isDraft=$false;headRefOid=$ghState.Sha;url='https://example.test/pr/7'}|ConvertTo-Json) }
+    if ($line -like 'pr view *') { return (@{state=$ghState.PrState;isDraft=$false;headRefOid=$ghState.Sha;url='https://example.test/pr/7';title='Test PR'}|ConvertTo-Json) }
     if ($line -like 'pr create *') { $index=[array]::IndexOf($args,'--body-file'); $ghState.Body=[IO.File]::ReadAllText($args[$index+1]) }
     if ($line -like 'repo view *') { return 'PRIVATE' }
     if ($line -like 'release list*' -or $line -like 'run list*') { return '[]' }
@@ -68,8 +68,17 @@ Assert-Equal $ghState.Body $body 'multiline PR body preserved through a temporar
 & ([scriptblock]::Create(((Build-MergePrCommands 'Owner/Repo' '7') -join "`n")))
 Assert-That ([bool]($calls -match ('--match-head-commit '+$ghState.Sha))) 'merge pins the inspected head commit'
 Assert-That (-not [bool]($calls -match '--admin|--delete-branch')) 'merge preserves normal repository checks and branches'
+$calls.Clear()
+& ([scriptblock]::Create(((Build-ClosePrCommands 'Owner/Repo' '7') -join "`n")))
+Assert-That ([bool]($calls -match '^pr close 7 --repo Owner/Repo$')) 'close closes the selected PR'
+Assert-That (-not [bool]($calls -match '--delete-branch')) 'close keeps the branch'
+$calls.Clear(); $ghState.PrState = 'MERGED'
+try { & ([scriptblock]::Create(((Build-ClosePrCommands 'Owner/Repo' '7') -join "`n"))); Assert-That $false 'close refuses a PR that is not open' } catch { Assert-That $true 'close refuses a PR that is not open' }
+Assert-That (-not [bool]($calls -match '^pr close')) 'a merged or closed PR is never closed again'
+$ghState.PrState = 'OPEN'
 foreach ($bad in @('0','-1','42;bad')) {
     try { Build-RerunCommands 'Owner/Repo' $bad | Out-Null; Assert-That $false "bad run ID rejected: $bad" } catch { Assert-That $true "bad run ID rejected: $bad" }
+    try { Build-ClosePrCommands 'Owner/Repo' $bad | Out-Null; Assert-That $false "bad PR number rejected: $bad" } catch { Assert-That $true "bad PR number rejected: $bad" }
 }
 try { Build-CreatePrCommands 'Owner/Repo' main main title body | Out-Null; Assert-That $false 'same branch refused' } catch { Assert-That $true 'same branch refused' }
 
@@ -94,6 +103,11 @@ Assert-That $reply.ok 'CLI create PR reaches visible control'
 $tab=$tabs.TabPages[0].Tag
 Assert-That ([bool](($tab.LastCommands -join "`n") -match 'gh pr create')) 'GUI builds PR create job in dry run'
 Assert-Equal $tab.Controls.PrBody.Text ($body.Replace("`n","`r`n")) 'CLI populates visible PR body'
+Assert-That ($null -ne (Get-PullRequestButton $tab.Controls 'PrClose')) 'the Pull requests section has a Close PR button'
+$reply=Invoke-CockpitRequest $state ([pscustomobject]@{command='action';action='pr-close';session=1;dryRun=$true;prNumber='7'})
+Assert-That $reply.ok 'CLI close PR reaches visible control'
+Assert-That ([bool](($tab.LastCommands -join "`n") -match 'gh pr close')) 'GUI builds PR close job in dry run'
+Assert-Equal $tab.Controls.PrNumber.Text '7' 'CLI populates visible PR number'
 $tab.LoadedRuns=@([pscustomobject]@{databaseId=42;status='completed';conclusion='failure'})
 [void]$tab.Controls.Run.Items.Add('Failed run'); $tab.Controls.Run.SelectedIndex=0
 $reply=Invoke-CockpitRequest $state ([pscustomobject]@{command='action';action='rerun';session=1;runId='42';dryRun=$true})

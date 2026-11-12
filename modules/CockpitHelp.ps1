@@ -24,7 +24,7 @@ function Get-CockpitHelp {
         command = 'help'
         data = @{
             commands = @('start','close','new-session','select-session','close-session','new-tab','select-tab','configure','release-plan','add-app','gitignore','bootstrap-plan','bootstrap-prepare','bootstrap-publish','action')
-            actions = @('git-pull','git-switch','git-fetch','git-merge','git-fast-forward','merge-tool','merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue','merge-quit','retry-last-job','rerun','rerun-failed','pr-list','pr-create','pr-merge','upload','deploy','retag-deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','update') + @(Get-FixCliActions)
+            actions = @('git-pull','git-switch','git-fetch','git-merge','git-fast-forward','merge-tool','merge-refresh','merge-file','merge-use-local','merge-use-incoming','merge-save','merge-continue','merge-quit','retry-last-job','rerun','rerun-failed','pr-list','pr-create','pr-merge','pr-close','upload','deploy','retag-deploy','dispatch','load-runs','publish-run','undraft','make-public','make-private','open-actions','open-release','copy-command','task','git-status','git-add','git-unstage','git-commit','git-push','create-repo','actions-secrets','code-cli','code-cli-terminal','update') + @(Get-FixCliActions)
             parameters = @{
                 newSession = @{ required = @(); optional = @() }
                 selectSession = @{ required = @('session'); optional = @('tab') }
@@ -56,6 +56,7 @@ function Get-CockpitHelp {
                 '{"command":"release-plan","target":"TradutorBUDA"}',
                 '{"command":"action","tab":1,"action":"deploy","target":"TradutorBUDA","version":"1.8.2","notes":"Release notes","confirm":true,"waitMs":900000}',
                 '{"command":"action","tab":1,"action":"retag-deploy","target":"TradutorBUDA","version":"1.8.1","replaceExistingTag":true,"confirm":true,"waitMs":900000}',
+                '{"command":"action","tab":1,"action":"pr-close","target":"TradutorBUDA","prNumber":"99","confirm":true,"waitMs":120000}',
                 '{"command":"action","tab":1,"action":"actions-secrets","target":"ScanBUDA","confirm":true}',
                 '{"command":"action","tab":1,"action":"code-cli","target":"TradutorBUDA","confirm":true}',
                 '{"command":"action","tab":1,"action":"code-cli-terminal","target":"TradutorBUDA","agent":"Claude Code","confirm":true}',
@@ -72,7 +73,7 @@ function Get-CockpitHelp {
             )
             safety = @{
                 retry = 'rerun/rerun-failed require runId and confirm:true; retries the original commit and inputs and waits for a new attempt. retry-last-job repeats this session failed job; tag builds use their existing run.'
-                pullRequests = 'pr-create takes prBase/prHead/prTitle/prBody, with the head already pushed. pr-merge takes prNumber and confirm:true, pins the inspected head SHA and does not bypass checks.'
+                pullRequests = 'pr-list lists the open PRs of the selected target''s repository. pr-create takes prBase/prHead/prTitle/prBody, with the head already pushed. pr-merge takes prNumber and confirm:true, pins the inspected head SHA and does not bypass checks. pr-close takes prNumber and confirm:true, closes an open PR without merging (for one whose changes reached the base another way) and keeps its branch, so it can be reopened.'
                 merge = 'git-pull requires confirm:true and a clean worktree, uses --no-rebase --no-commit. merge-tool opens the visual editor; merge-save/merge-continue require that editor and confirm:true. Save rejects conflict markers and files changed since loading. merge-save accepts mergeResultFile for a UTF-8 file up to 1 MiB when the result is too large for a CLI argument. Continue runs Gitleaks before committing. merge-quit requires confirm:true and clicks Git > Forget merge; it runs git merge --quit only when there are no unresolved files and leaves the index and working files in place.'
                 gitRepoRoot = 'configure gitRepoRoot to use an existing .git working folder for this session and target. It applies to cockpit actions and to release-plan, and is cleared when the target changes. Pass an empty string to restore the target folder.'
                 deploy = 'Rejects an existing local tag, remote tag, or GitHub release.'

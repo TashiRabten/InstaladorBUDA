@@ -58,10 +58,25 @@ function Build-MergePrCommands {
     )
 }
 
+# "Close PR" closes an open PR without merging it, for a PR whose changes reached the base another way (a local
+# merge or squash, a cherry-pick, the same change made by hand) and that GitHub therefore keeps open. The branch is
+# kept: closing never deletes it, so the PR can be reopened on GitHub.
+function Build-ClosePrCommands {
+    param([string]$Repo, [string]$Number)
+    Assert-RecoveryRepo $Repo
+    if ($Number -notmatch '^[1-9][0-9]*$') { throw 'Enter a PR number.' }
+    $prArgs = (Quote-PS $Number) + ' --repo ' + (Quote-PS $Repo)
+    return @(
+        "`$pr = & gh pr view $prArgs --json state,title,url | ConvertFrom-Json",
+        "if (`$LASTEXITCODE) { exit `$LASTEXITCODE }; if (`$pr.state -ne 'OPEN') { throw ('The PR is ' + `$pr.state + ', not open: nothing to close.') }",
+        "Write-Host (`$pr.url + '  ' + `$pr.title); & gh pr close $prArgs"
+    )
+}
+
 function Build-PullRequestSection {
     param($Font, [int]$Width, [int]$Y)
     $group = New-Object System.Windows.Forms.GroupBox
-    $group.Text = 'Pull requests (pushed branch -> create -> merge)'
+    $group.Text = 'Pull requests (pushed branch -> create -> merge or close)'
     $controls = @{}; $row = $UI.BoxTop
     foreach ($field in @('Base','Head','Title','Body','Number')) {
         $label = New-Object System.Windows.Forms.Label
@@ -76,16 +91,26 @@ function Build-PullRequestSection {
         $group.Controls.AddRange(@($label, $fieldBox)); $row += $UI.BoxRowPitch
     }
     $buttons = @{}
-    foreach ($name in @('List','Create','Merge')) {
+    foreach ($name in @('List','Create','Merge','Close')) {
         $button = New-Object System.Windows.Forms.Button
         $button.Text = "$name PR"; $button.Font = $Font
+        $button.Name = "Pr$name"   # the CLI finds each button by this name (Get-PullRequestButton)
         $buttons[$name] = $button
         $group.Controls.Add($button)
     }
-    [void](Set-ButtonRow @($buttons.List, $buttons.Create, $buttons.Merge) $UI.BoxPad $row 110)
+    [void](Set-ButtonRow @($buttons.List, $buttons.Create, $buttons.Merge, $buttons.Close) $UI.BoxPad $row 110)
     $height = $row + $UI.BtnH + $UI.BoxPad
     Set-Box $group $UI.Pad $Y $Width $height; $group.Anchor = 'Top,Left,Right'
     return @{ Group = $group; Controls = $controls; Buttons = $buttons; Height = $height }
+}
+
+# One button of a session's Pull requests section, found through the section's fields: the session's Buttons map
+# names List, Create and Merge, and the buttons added later are reached by their Name (PrClose).
+function Get-PullRequestButton {
+    param($Controls, [string]$Name)
+    $group = if ($Controls.PrNumber) { $Controls.PrNumber.Parent } else { $null }
+    if (-not $group) { return $null }
+    return $group.Controls[$Name]
 }
 
 # What "List PR" tells the maintainer before the list: what each field of the section means, with a suggestion taken
@@ -158,7 +183,8 @@ function Get-PullRequestFieldHelp {
         $lines += '  Title = o título do PR (obrigatório)'
     }
     $lines += '  Body  = a descrição (opcional)'
-    $lines += '  Number = só para Merge PR: o número do PR, na primeira coluna da lista abaixo'
+    $lines += '  Number = para Merge PR e Close PR: o número do PR, na primeira coluna da lista abaixo'
+    $lines += '  Close PR fecha sem mesclar (para um PR cujas mudanças já entraram na base por outro caminho); a branch fica.'
     $lines += "As sugestões da caixa (pacotes .budafix) não usam estes campos: elas abrem o PR pelo botão 'Abrir PR' da janela de Sugestões."
     return $lines
 }
@@ -170,7 +196,7 @@ function Connect-PullRequestSection {
         try {
             Assert-RecoveryRepo $repo
             foreach ($line in (Get-PullRequestFieldHelp $app $repo $Section.Controls)) { & $Log $line }
-            & $Run @("& gh pr list --repo $(Quote-PS $repo) --state open") 'List open pull requests' $true $app.repoRoot
+            & $Run @("& gh pr list --repo $(Quote-PS $repo) --state open") "$repo`: list open pull requests" $true $app.repoRoot
         }
         catch { & $Log $_.Exception.Message }
     }.GetNewClosure())
@@ -182,6 +208,11 @@ function Connect-PullRequestSection {
     $Section.Buttons.Merge.Add_Click({
         $app = Get-App $Target.SelectedItem; $c = $Section.Controls
         try { $commands = Build-MergePrCommands (Resolve-AppRepo $app) $c.Number.Text.Trim(); & $Run $commands "Merge PR #$($c.Number.Text.Trim()) (repository checks apply)" $true $app.repoRoot }
+        catch { & $Log $_.Exception.Message }
+    }.GetNewClosure())
+    $Section.Buttons.Close.Add_Click({
+        $app = Get-App $Target.SelectedItem; $c = $Section.Controls
+        try { $repo = Resolve-AppRepo $app; $commands = Build-ClosePrCommands $repo $c.Number.Text.Trim(); & $Run $commands "$repo`: close PR #$($c.Number.Text.Trim()) without merging (the branch is kept)" $true $app.repoRoot }
         catch { & $Log $_.Exception.Message }
     }.GetNewClosure())
 }
