@@ -28,10 +28,13 @@ function Select-CockpitSession {
 
 function Get-CockpitStatus {
     param($GuiState, $Request)
+    # logLines: how much of each session's log comes back (default 20, at most 2000), so an agent reads a whole job.
+    $lineCount = 20
+    if (Test-CliProperty $Request 'logLines') { $lineCount = [Math]::Max(1, [Math]::Min(2000, [int]$Request.logLines)) }
     $all = @()
     foreach ($page in @($GuiState.Tabs.TabPages | Where-Object { $_.Tag -and $_.Tag.Controls })) {
         $state = $page.Tag; $c = $state.Controls
-        $tail = @($c.Log.Text -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 20)
+        $tail = @($c.Log.Text -split "`r?`n" | Where-Object { $_ } | Select-Object -Last $lineCount)
         $all += [pscustomobject]@{
             id = $state.Id; sessionId = $state.Id; target = "$($c.Target.SelectedItem)"; version = $c.Version.Text
             publish = [bool]$c.Publish.Checked; dryRun = [bool]$c.DryRun.Checked
@@ -178,10 +181,128 @@ function Invoke-CockpitCliRepository {
     $Controls.BootstrapRepo.Text = $requestedRepo
 }
 
+# The help reply, with the agent shell (which lives in this module) added to it.
+function Get-CockpitHelpWithShell {
+    $help = Get-CockpitHelp
+    $help.data.actions = @($help.data.actions) + 'shell'
+    $help.data.parameters.shell = @{ required = @('commands (a list of PowerShell lines) or script (one block)', 'confirm:true'); optional = @('session','tab','target','gitRepoRoot','workdir','label','waitMs') }
+    $help.data.parameters.status = @{ required = @(); optional = @('session','tab','logLines') }
+    $help.data.safety.shell = 'shell (confirm:true) runs PowerShell as a job of the session, the same way every other step runs: the lines are written to the session log, run from a script file in workdir (default: the session''s Git folder or the target''s project folder), each native failure ends the job with its exit code, and the output streams into the log. With waitMs the reply comes when the job ends; read the whole output with status and logLines (up to 2000). Dry run only logs the lines. Never put a password, token or key in the lines: they are logged.'
+    $help.data.safety.publishApproval = 'Publishing asks the developer in the cockpit window: deploy, retag-deploy, dispatch, publish-run, undraft, upload, rerun, rerun-failed, retry-last-job, bootstrap-publish, and shell lines that create or push a tag, change a release, or run or re-run a workflow, wait for a Yes clicked in a question over the window (No is the default; closing it refuses). confirm:true is not that Yes. Ask the developer in the chat before asking to publish. Dry runs do not ask.'
+    $help.data.examples = @($help.data.examples) + @(
+        '{"command":"action","session":2,"action":"shell","commands":["git status --short","gh pr list --repo TashiRabten/SuiteBUDA"],"confirm":true,"waitMs":120000}',
+        '{"command":"status","session":2,"logLines":300}'
+    )
+    return $help
+}
+
+# -- Publishing waits for the developer ---------------------------------------------------------
+# The developer's rule (2026-11-14, after a release tag nobody had asked for): an agent never publishes on its own.
+# A CLI request that would publish - a release or tag, a workflow run, a re-run of a build, a model upload, a draft
+# made public, the first push of a new repository, or shell lines that do the same - waits for the developer's own
+# Yes in a question the cockpit window shows. confirm:true in the JSON is not that answer. The question opens over
+# the window with No as the default button; No, or closing it, refuses the request. Dry runs do not ask.
+$script:PublishActions = @('deploy','retag-deploy','dispatch','publish-run','undraft','upload','rerun','rerun-failed','retry-last-job')
+
+function Test-PublishingShellLine {
+    param([string]$Line)
+    $patterns = @(
+        '\bgh\s+release\s+(create|edit|upload|delete)\b',
+        '\bgh\s+workflow\s+run\b',
+        '\bgh\s+run\s+rerun\b',
+        '\bgh\s+api\b.*\b(releases|tags|dispatches)\b.*(-X|--method)\s*(POST|PATCH|PUT|DELETE)\b',
+        '\bgh\s+api\b.*(-X|--method)\s*(POST|PATCH|PUT|DELETE)\b.*\b(releases|tags|dispatches)\b',
+        '\bgit\s+push\b.*(--tags|--follow-tags|--mirror|refs/tags/|\bv?\d+\.\d+\.\d+\b)',
+        '\bgit\s+tag\s+(?!-l\b|--list\b|-n\d*\b|--contains\b|--points-at\b|--merged\b|--no-merged\b|--sort\b)\S'
+    )
+    foreach ($p in $patterns) { if ($Line -match "(?i)$p") { return $true } }
+    return $false
+}
+
+# The permission question: Yes / No (No is the default and the Esc key), a countdown, and No by itself after
+# $Seconds, so it never outlives the CLI request that asked (the pipe waits 120 s).
+function Show-PublishQuestion {
+    param($Owner, [string]$Text, [int]$Seconds)
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = 'InstaladorBUDA - permission to publish'
+    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+    $f.StartPosition = 'CenterParent'; $f.TopMost = $true; $f.ShowInTaskbar = $false
+    $f.ClientSize = New-Object System.Drawing.Size(540, 230)
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Text; $label.Location = New-Object System.Drawing.Point(14, 14); $label.Size = New-Object System.Drawing.Size(512, 160)
+    $count = New-Object System.Windows.Forms.Label
+    $count.Location = New-Object System.Drawing.Point(14, 192); $count.Size = New-Object System.Drawing.Size(320, 24)
+    $yes = New-Object System.Windows.Forms.Button
+    $yes.Text = 'Yes'; $yes.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $yes.Location = New-Object System.Drawing.Point(350, 186); $yes.Size = New-Object System.Drawing.Size(80, 30)
+    $no = New-Object System.Windows.Forms.Button
+    $no.Text = 'No'; $no.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $no.Location = New-Object System.Drawing.Point(440, 186); $no.Size = New-Object System.Drawing.Size(80, 30)
+    $f.AcceptButton = $no; $f.CancelButton = $no
+    $f.Controls.AddRange(@($label, $count, $yes, $no))
+    $state = @{ Left = $Seconds }
+    $count.Text = "Closes as No in $($state.Left) s"
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 1000
+    $timer.Add_Tick({
+        $state.Left--
+        $count.Text = "Closes as No in $($state.Left) s"
+        if ($state.Left -le 0) { $timer.Stop(); $f.DialogResult = [System.Windows.Forms.DialogResult]::No }
+    }.GetNewClosure())
+    $f.Add_Shown({ $no.Focus(); $timer.Start() }.GetNewClosure())
+    try { return $f.ShowDialog($Owner) }
+    finally { $timer.Stop(); $timer.Dispose(); $f.Dispose() }
+}
+
+function Assert-PublishApproval {
+    param($GuiState, $State, [string]$What)
+    if ($State -and $State.AppendLog) { & $State.AppendLog "Waiting for your answer in this window: an agent asks to $What" }
+    $form = if ($GuiState) { $GuiState.Form } else { $null }
+    $answer = [System.Windows.Forms.DialogResult]::No
+    if ($form) {
+        if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal }
+        $form.Activate()
+        $text = "An agent asks to publish:`n`n$What`n`nThis is not a dry run. Allow it?`n`nNo, closing this question, or no answer in 100 s refuses it, and the agent is told to ask you in the chat first."
+        $answer = Show-PublishQuestion $form $text 100
+    }
+    if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
+        if ($State -and $State.AppendLog) { & $State.AppendLog "Refused in this window: $What" }
+        throw "Not published: the developer did not allow '$What' in the cockpit window. Ask them in the chat before trying again."
+    }
+    if ($State -and $State.AppendLog) { & $State.AppendLog "Allowed in this window: $What" }
+}
+
+# shell: PowerShell lines from the agent, run as this session's job (logged, like every step the cockpit runs).
+function Invoke-AgentShellRequest {
+    param($Request, $State, $Controls, $GuiState)
+    if (-not $Request.confirm -and -not $Controls.DryRun.Checked) { throw 'shell requires confirm:true (or set dryRun:true to only log the lines).' }
+    $lines = @()
+    if (Test-CliProperty $Request 'commands') { $lines = @(@($Request.commands) | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() }) }
+    elseif (Test-CliProperty $Request 'script') { $lines = @([string]$Request.script) | Where-Object { $_.Trim() } }
+    if (@($lines).Count -eq 0) { throw 'shell requires commands (a list of PowerShell lines) or script (one block).' }
+    $app = Get-SessionApp (Get-App ([string]$Controls.Target.SelectedItem)) $Controls.GitRepoRoot.Text
+    if (Test-CliProperty $Request 'workdir') { $dir = [string]$Request.workdir }
+    elseif ($app -and $app.repoRoot) { $dir = [string]$app.repoRoot }
+    else { $dir = [string]$AppDir }
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { throw "workdir does not exist: $dir" }
+    $dir = (Resolve-Path -LiteralPath $dir).Path
+    $label = if (Test-CliProperty $Request 'label') { 'Shell: ' + (([string]$Request.label) -replace '[\r\n]', ' ') } else { 'Shell (agent)' }
+    & $State.AppendLog ("To run - $label ($(@($lines).Count) line(s), in $dir):")
+    foreach ($line in $lines) { foreach ($part in ($line -split "`r?`n")) { & $State.AppendLog "    $part" } }
+    if (-not $Controls.DryRun.Checked) {
+        $publishing = @($lines | ForEach-Object { $_ -split "`r?`n" } | Where-Object { Test-PublishingShellLine $_ })
+        if ($publishing.Count -gt 0) { Assert-PublishApproval $GuiState $State ('run shell lines that publish: ' + (($publishing | Select-Object -First 3) -join ' | ')) }
+    }
+    $State.CliConfirmed = $true
+    try { & $State.StartJob ([string[]]$lines) $label $false $dir $null $null $true }
+    finally { $State.CliConfirmed = $false }
+    return [pscustomobject]@{ ok = $true; command = 'action'; data = @{ tabId = $State.Id; action = 'shell'; workdir = $dir; lines = @($lines).Count; running = [bool]$State.IsRunning; dryRun = [bool]$Controls.DryRun.Checked } }
+}
+
 function Invoke-CockpitRequest {
     param($GuiState, $Request)
     $command = [string]$Request.command
-    if ($command -eq 'help') { return (Get-CockpitHelp) }
+    if ($command -eq 'help') { return (Get-CockpitHelpWithShell) }
     if ($command -eq 'list') {
         $targets = Get-CockpitTargetList
         return [pscustomobject]@{ ok = $true; command = 'list'; data = @{ targets = $targets; tasks = @($script:Tasks | ForEach-Object { [pscustomobject]@{ name = $_.name; runOn = $_.runOn } }) } }
@@ -277,6 +398,7 @@ function Invoke-CockpitRequest {
             'publish' { $c.Buttons.BootstrapPublish }
         }
         Assert-CockpitButtonReady $button "The bootstrap $phase control is unavailable."
+        if ($phase -eq 'publish') { Assert-PublishApproval $GuiState $state "bootstrap-publish $githubRepo (first push of the repository)" }
         $state.CliConfirmed = $phase -ne 'plan'
         try { $button.PerformClick() } finally { $state.CliConfirmed = $false }
         return [pscustomobject]@{ ok = $true; command = $command; data = @{ tabId = $state.Id; phase = $phase; repoRoot = $repoRoot; githubRepo = $githubRepo; running = [bool]$state.IsRunning } }
@@ -332,6 +454,7 @@ function Invoke-CockpitRequest {
     $actionName = ([string]$Request.action).ToLowerInvariant()
     if ($actionName.StartsWith('fix-')) { return (Invoke-FixInboxCliRequest $GuiState $Request $state $actionName) }
     if ($state.IsRunning -and $actionName -ne 'update') { throw "Tab $($state.Id) already has a job running. Use another tab or wait for it to finish." }
+    if ($actionName -eq 'shell') { return (Invoke-AgentShellRequest $Request $state $c $GuiState) }
     if ($actionName -eq 'actions-secrets') { Assert-ActionsSecretsRequest $Request $c }
     if ($actionName -in @('code-cli', 'code-cli-terminal') -and -not $Request.confirm) { throw "$actionName requires confirm:true." }
     if ($actionName -eq 'update') {
@@ -351,6 +474,19 @@ function Invoke-CockpitRequest {
     }
     if ($actionName -in $confirmationActions -and -not $c.DryRun.Checked -and -not $Request.confirm) {
         throw "$actionName requires confirm:true (or set dryRun:true to preview only)."
+    }
+    if ($actionName -in $script:PublishActions -and -not $c.DryRun.Checked) {
+        $what = ("$actionName - $($app.name) $($c.Version.Text)").Trim()
+        if (Test-CliProperty $Request 'runId') { $what += " (run $($Request.runId))" }
+        # The question is modal, but the window keeps serving CLI requests while it is open: one of them can change
+        # this session's target or version, and the Yes would then publish something else. Same session or nothing.
+        $asked = "$($c.Target.SelectedItem)|$($c.Version.Text)|$($c.GitRepoRoot.Text)|$([bool]$c.DryRun.Checked)"
+        Assert-PublishApproval $GuiState $state $what
+        $now = "$($c.Target.SelectedItem)|$($c.Version.Text)|$($c.GitRepoRoot.Text)|$([bool]$c.DryRun.Checked)"
+        if ($now -ne $asked) {
+            & $state.AppendLog "Not published: the session changed while the question was open ($asked -> $now). Ask again."
+            throw "Not published: the session changed while the question was open ($asked -> $now). Ask again."
+        }
     }
     $gitActionButtons = @{ 'git-status' = 'GitStatus'; 'git-add' = 'GitAdd'; 'git-unstage' = 'GitUnstage'; 'git-commit' = 'GitCommit'; 'git-push' = 'GitPush'; 'merge-quit' = 'GitMergeQuit' }
     if ($actionName -eq 'actions-secrets') {
@@ -478,9 +614,9 @@ function Start-CockpitPipeServer {
                 $item = [hashtable]::Synchronized(@{ Request = $request; Response = $null; Done = (New-Object System.Threading.ManualResetEvent($false)) })
                 $Queue.Enqueue($item)
                 if ($item.Done.WaitOne(120000)) { $reply = $item.Response }
-                else { $reply = [pscustomobject]@{ ok = $false; error = 'The UI did not process the command within 120 seconds.' } }
+                else { $item.Abandoned = $true; $reply = [pscustomobject]@{ ok = $false; error = 'The UI did not process the command within 120 seconds; it will not run later.' } }
                 $writer.WriteLine(($reply | ConvertTo-Json -Compress -Depth 12))
-                $reader.Dispose(); $writer.Dispose(); $item.Done.Dispose()
+                $reader.Dispose(); $writer.Dispose(); if (-not $item.Abandoned) { $item.Done.Dispose() }
             } catch {
                 if ($pipe -and $pipe.IsConnected) {
                     try {

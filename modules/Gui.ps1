@@ -176,12 +176,20 @@
     $controlTimer = New-Object System.Windows.Forms.Timer
     $controlTimer.Interval = 100
     $controlTimer.Add_Tick({
-        while ($controlQueue.Count -gt 0) {
-            $item = $controlQueue.Dequeue()
-            try { $item.Response = Invoke-CockpitRequest $guiState $item.Request }
-            catch { $item.Response = [pscustomobject]@{ ok = $false; error = $_.Exception.Message } }
-            finally { $item.Done.Set() | Out-Null }
-        }
+        # One request at a time: a request can open a modal question (the permission to publish), whose message loop
+        # keeps this timer ticking; served then, another request could change the session the question is about.
+        if ($guiState.Serving) { return }
+        $guiState.Serving = $true
+        try {
+            while ($controlQueue.Count -gt 0) {
+                $item = $controlQueue.Dequeue()
+                # The caller stopped waiting (pipe timeout): its request is not run late.
+                if ($item.Abandoned) { continue }
+                try { $item.Response = Invoke-CockpitRequest $guiState $item.Request }
+                catch { $item.Response = [pscustomobject]@{ ok = $false; error = $_.Exception.Message } }
+                finally { try { $item.Done.Set() | Out-Null } catch { } }
+            }
+        } finally { $guiState.Serving = $false }
     }.GetNewClosure())
     $form.Add_Shown({
         $controlTimer.Start()
